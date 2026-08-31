@@ -163,7 +163,7 @@ export async function pollCreatedVideoGenerationTask(config: AiConfig, task: Vid
     try {
         if (initialDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, initialDelayMs));
         for (; ;) {
-            const video = await cacheProtectedGeminiVideo(config, model, await pollOnce());
+            const video = await cacheProtectedFanrenVideo(config, model, await cacheProtectedGeminiVideo(config, model, await pollOnce()));
             onPoll?.(video);
             if (isFailedVideoStatus(video.status)) throw new VideoRequestError(video.error?.message || "视频生成失败", video);
             if (typeof video.progress === "number") onProgress?.(video.progress, video);
@@ -194,7 +194,7 @@ export async function pollVideoGenerationTaskStatus(config: AiConfig, task: Vide
     const result = directProvider
         ? await (await import("@/services/api/direct-ai")).pollDirectVideoTask(config, directProvider, pollId)
         : unwrapVideoResponseForConfig(config, model, (await axios.get<ApiVideoResponse>(aiVideoPollUrl(config, model, pollId), { headers: aiHeaders(config), params: usesAccountProxy(config) ? { model } : undefined })).data);
-    return cacheProtectedGeminiVideo(config, model, await cacheProtectedGrokVideo(config, model, result));
+    return cacheProtectedFanrenVideo(config, model, await cacheProtectedGeminiVideo(config, model, await cacheProtectedGrokVideo(config, model, result)));
 }
 
 export async function listVideoGenerationTasks(config: AiConfig) {
@@ -225,6 +225,17 @@ async function cacheProtectedGrokVideo(config: AiConfig, model: string, task: Vi
     if (!response.ok) throw new VideoRequestError(`视频内容下载失败：${response.status}`, task);
     const media = await uploadMediaFile(await response.blob(), "generated-video");
     return { ...task, url: media.url, video_url: media.url, storageKey: media.storageKey };
+}
+
+async function cacheProtectedFanrenVideo(config: AiConfig, model: string, task: VideoResponse) {
+    if (!isFanrenIntegratedConfig(config) || task.storageKey || !isCompletedVideoStatus(task.status)) return task;
+    const taskID = task.id || task.task_id || task.video_id;
+    if (!taskID) return task;
+    const contentURL = task.video_url || task.url || `/api/creative/videos/${encodeURIComponent(taskID)}/content`;
+    const response = await fetch(contentURL, { headers: aiHeaders(config) });
+    if (!response.ok) throw new VideoRequestError(`视频内容下载失败：${response.status}`, task);
+    const media = await uploadMediaFile(await response.blob(), "generated-video");
+    return { ...task, url: media.url, video_url: media.url, storageKey: media.storageKey, model };
 }
 
 async function createGrok2APIVideoRequestBody(config: AiConfig, model: string, prompt: string, input: Required<VideoReferenceInput>) {
