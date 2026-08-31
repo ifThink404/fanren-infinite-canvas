@@ -8,7 +8,7 @@ import { isKIESeedreamLayerDecompositionModel } from "@/lib/kie-models";
 import { isMimoChannel, mimoModels } from "@/lib/mimo-tts";
 import { dataUrlToGeminiInlineData, geminiActionUrl, geminiDirectHeaders, geminiErrorMessage, isGeminiConfig, normalizeGeminiBaseUrl } from "@/lib/gemini";
 import { imageToDataUrl, resolveImageUrl } from "@/services/image-storage";
-import { buildApiUrl, channelIdForActiveModel, channelProtocolForConfig, directAIProviderForConfig, localChannelForActiveModel, useConfigStore, type AiConfig } from "@/stores/use-config-store";
+import { buildApiUrl, channelIdForActiveModel, channelProtocolForConfig, directAIProviderForConfig, fanrenTokenIdForModel, localChannelForActiveModel, useConfigStore, type AiConfig } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
 import type { ReferenceImage } from "@/types/image";
 import { nanoid } from "nanoid";
@@ -528,14 +528,15 @@ export function aiApiUrl(config: AiConfig, path: string) {
     return buildApiUrl(channel?.baseUrl || config.baseUrl, path);
 }
 
-export function aiHeaders(config: AiConfig, contentType?: string): Record<string, string> {
+export function aiHeaders(config: AiConfig, contentType?: string, model = config.model): Record<string, string> {
     const token = useUserStore.getState().token;
     if (isFanrenIntegratedConfig(config)) {
         if (!token) throw new Error("请先登录凡人站账号");
-        if (!config.fanrenTokenId) throw new Error("请先选择凡人 Key");
+        const fanrenTokenId = fanrenTokenIdForModel(config, model);
+        if (!fanrenTokenId) throw new Error("请先选择凡人 Key");
         return {
             Authorization: `Bearer ${token}`,
-            [FANREN_TOKEN_ID_HEADER]: String(config.fanrenTokenId),
+            [FANREN_TOKEN_ID_HEADER]: String(fanrenTokenId),
             ...(contentType ? { "Content-Type": contentType } : {}),
         };
     }
@@ -1035,13 +1036,13 @@ export async function createCanvasImageTask(config: AiConfig & { seedIndex?: num
     return payload.data;
 }
 
-export async function pollCanvasImageTaskStatus(taskId: string): Promise<CanvasImageTask> {
+export async function pollCanvasImageTaskStatus(taskId: string, model = ""): Promise<CanvasImageTask> {
     const token = useUserStore.getState().token;
     if (!token) throw new Error("请先登录后再使用云端渠道");
     const config = useConfigStore.getState().config;
     const integrated = FANREN_SSO_ENABLED && config.channelMode === "remote";
     const response = await fetch(integrated ? `/api/creative/images/jobs/${encodeURIComponent(taskId)}` : appPath(`/api/v1/canvas/image-tasks/${encodeURIComponent(taskId)}`), {
-        headers: integrated ? aiHeaders(config) : { Authorization: `Bearer ${token}` },
+        headers: integrated ? aiHeaders(config, undefined, model || config.model) : { Authorization: `Bearer ${token}` },
     });
     if (!response.ok) {
         const error = await fetchErrorDetail(response, "读取图片任务失败");
@@ -1570,7 +1571,7 @@ export async function listCanvasImageTasks(config: AiConfig, sources: Array<"ima
 export async function batchCanvasImageTaskStatus(config: AiConfig, ids: string[]) {
     const taskIds = Array.from(new Set(ids.map((id) => id.trim()).filter(Boolean)));
     if (!usesAccountProxy(config) || !taskIds.length) return [];
-    if (isFanrenIntegratedConfig(config)) return Promise.all(taskIds.map((id) => pollCanvasImageTaskStatus(id)));
+    if (isFanrenIntegratedConfig(config)) return Promise.all(taskIds.map((id) => pollCanvasImageTaskStatus(id, config.model)));
     const response = await fetch(appPath("/api/v1/canvas/image-tasks/status"), {
         method: "POST",
         headers: aiHeaders(config, "application/json"),

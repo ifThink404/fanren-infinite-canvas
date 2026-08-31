@@ -11,7 +11,7 @@ import { isKIEGrokVideoModel, isKIEKlingV3Config, kieKlingOmniVariant } from "@/
 import { isAgnesVideoV25Model, isCogVideoX3Model, modelKey, normalizeCogVideoX3Duration, supportsVideoAudioGeneration } from "@/lib/video-model-capabilities";
 import { resolveMediaUrl, uploadMediaFile } from "@/services/file-storage";
 import { imageToDataUrl, resolveImageUrl } from "@/services/image-storage";
-import { buildApiUrl, channelIdForActiveModel, channelProtocolForConfig, directAIProviderForConfig, localChannelForActiveModel, type AiConfig, type VideoElementReference } from "@/stores/use-config-store";
+import { buildApiUrl, channelIdForActiveModel, channelProtocolForConfig, directAIProviderForConfig, fanrenTokenIdForModel, localChannelForActiveModel, type AiConfig, type VideoElementReference } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
@@ -82,12 +82,13 @@ function agnesBaseUrl(baseUrl: string) {
     return normalized.toLowerCase().endsWith("/v1") ? normalized.slice(0, -3).replace(/\/+$/, "") : normalized;
 }
 
-function aiHeaders(config: AiConfig): Record<string, string> {
+function aiHeaders(config: AiConfig, model = config.model): Record<string, string> {
     const token = useUserStore.getState().token;
     if (isFanrenIntegratedConfig(config)) {
         if (!token) throw new Error("请先登录凡人站账号");
-        if (!config.fanrenTokenId) throw new Error("请先选择凡人 Key");
-        return { Authorization: `Bearer ${token}`, [FANREN_TOKEN_ID_HEADER]: String(config.fanrenTokenId) };
+        const fanrenTokenId = fanrenTokenIdForModel(config, model);
+        if (!fanrenTokenId) throw new Error("请先选择凡人 Key");
+        return { Authorization: `Bearer ${token}`, [FANREN_TOKEN_ID_HEADER]: String(fanrenTokenId) };
     }
     if (config.channelMode === "remote" && !token) throw new Error("请先登录后再使用云端渠道");
     if (config.channelMode === "remote") return { Authorization: `Bearer ${token}`, ...(channelIdForActiveModel(config) ? { "X-Model-Channel-ID": channelIdForActiveModel(config) } : {}) };
@@ -124,7 +125,7 @@ export async function createVideoGenerationTask(config: AiConfig, prompt: string
     try {
         const createOptions = normalizeVideoTaskCreateOptions(options);
         const accountProxy = usesAccountProxy(config);
-        const headers = { ...aiHeaders(config), ...(accountProxy && createOptions.clientTaskId ? { "X-Client-Video-Task-ID": createOptions.clientTaskId } : {}), ...(accountProxy && createOptions.source ? { "X-Video-Task-Source": createOptions.source } : {}), ...(accountProxy && createOptions.sourceId ? { "X-Video-Task-Source-ID": createOptions.sourceId } : {}) };
+        const headers = { ...aiHeaders(config, model), ...(accountProxy && createOptions.clientTaskId ? { "X-Client-Video-Task-ID": createOptions.clientTaskId } : {}), ...(accountProxy && createOptions.source ? { "X-Video-Task-Source": createOptions.source } : {}), ...(accountProxy && createOptions.sourceId ? { "X-Video-Task-Source-ID": createOptions.sourceId } : {}) };
         const directProvider = !accountProxy ? directAIProviderForConfig(config) : null;
         const channel = localChannelForActiveModel(config);
         const createUrl = !accountProxy && isGeminiConfig(config, model)
@@ -158,7 +159,7 @@ export async function pollCreatedVideoGenerationTask(config: AiConfig, task: Vid
     const directPoll = directProvider ? (await import("@/services/api/direct-ai")).pollDirectVideoTask : null;
     const pollOnce = directProvider && directPoll
         ? () => directPoll(config, directProvider, pollId)
-        : async () => unwrapVideoResponseForConfig(config, model, (await axios.get<ApiVideoResponse>(aiVideoPollUrl(config, model, pollId), { headers: aiHeaders(config), params: usesAccountProxy(config) ? { model } : undefined })).data);
+        : async () => unwrapVideoResponseForConfig(config, model, (await axios.get<ApiVideoResponse>(aiVideoPollUrl(config, model, pollId), { headers: aiHeaders(config, model), params: usesAccountProxy(config) ? { model } : undefined })).data);
     let completed: VideoResponse | null = null;
     try {
         if (initialDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, initialDelayMs));
@@ -193,7 +194,7 @@ export async function pollVideoGenerationTaskStatus(config: AiConfig, task: Vide
     const directProvider = !usesAccountProxy(config) ? directAIProviderForConfig(config) : null;
     const result = directProvider
         ? await (await import("@/services/api/direct-ai")).pollDirectVideoTask(config, directProvider, pollId)
-        : unwrapVideoResponseForConfig(config, model, (await axios.get<ApiVideoResponse>(aiVideoPollUrl(config, model, pollId), { headers: aiHeaders(config), params: usesAccountProxy(config) ? { model } : undefined })).data);
+        : unwrapVideoResponseForConfig(config, model, (await axios.get<ApiVideoResponse>(aiVideoPollUrl(config, model, pollId), { headers: aiHeaders(config, model), params: usesAccountProxy(config) ? { model } : undefined })).data);
     return cacheProtectedFanrenVideo(config, model, await cacheProtectedGeminiVideo(config, model, await cacheProtectedGrokVideo(config, model, result)));
 }
 
@@ -221,7 +222,7 @@ async function cacheProtectedGrokVideo(config: AiConfig, model: string, task: Vi
     const url = task.video_url || task.url || "";
     if (!isCompletedVideoStatus(task.status) || task.storageKey || !isGrok2APIVideoConfig(config, model) || !/\/v1\/videos\/[^/]+\/content(?:[?#]|$)/.test(url)) return task;
     const taskId = task.task_id || task.id || task.video_id || "";
-    const response = await fetch(`${aiApiUrl(config, `/videos/${encodeURIComponent(taskId)}/content`)}?model=${encodeURIComponent(model)}`, { headers: aiHeaders(config) });
+    const response = await fetch(`${aiApiUrl(config, `/videos/${encodeURIComponent(taskId)}/content`)}?model=${encodeURIComponent(model)}`, { headers: aiHeaders(config, model) });
     if (!response.ok) throw new VideoRequestError(`视频内容下载失败：${response.status}`, task);
     const media = await uploadMediaFile(await response.blob(), "generated-video");
     return { ...task, url: media.url, video_url: media.url, storageKey: media.storageKey };
@@ -232,7 +233,7 @@ async function cacheProtectedFanrenVideo(config: AiConfig, model: string, task: 
     const taskID = task.id || task.task_id || task.video_id;
     if (!taskID) return task;
     const contentURL = task.video_url || task.url || `/api/creative/videos/${encodeURIComponent(taskID)}/content`;
-    const response = await fetch(contentURL, { headers: aiHeaders(config) });
+    const response = await fetch(contentURL, { headers: aiHeaders(config, model) });
     if (!response.ok) throw new VideoRequestError(`视频内容下载失败：${response.status}`, task);
     const media = await uploadMediaFile(await response.blob(), "generated-video");
     return { ...task, url: media.url, video_url: media.url, storageKey: media.storageKey, model };

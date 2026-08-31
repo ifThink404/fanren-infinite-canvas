@@ -92,6 +92,8 @@ export type AiConfig = {
     textChannelId: string;
     audioChannelId: string;
     fanrenTokenId: number;
+    fanrenTokenIds: number[];
+    fanrenTokenModels: Record<string, string[]>;
 };
 
 export const CONFIG_STORE_KEY = "infinite-canvas:ai_config_store";
@@ -166,6 +168,8 @@ export const defaultConfig: AiConfig = {
     textChannelId: "",
     audioChannelId: "",
     fanrenTokenId: 0,
+    fanrenTokenIds: [],
+    fanrenTokenModels: {},
 };
 
 type ConfigStore = {
@@ -183,7 +187,8 @@ type ConfigStore = {
 };
 
 function resolveEffectiveConfig(config: AiConfig, modelChannel: AdminPublicSettings["modelChannel"] | null, canUseRemoteChannel: boolean) {
-    const channelMode = canUseRemoteChannel ? (modelChannel?.allowCustomChannel ? config.channelMode : "remote") : "local";
+    const canCustomizeChannel = FANREN_SSO_ENABLED || modelChannel?.allowCustomChannel === true;
+    const channelMode = canUseRemoteChannel ? (canCustomizeChannel ? config.channelMode : "remote") : "local";
     if (channelMode === "local" || !modelChannel) {
         const localChannels = normalizeLocalChannels(config);
         return {
@@ -194,11 +199,15 @@ function resolveEffectiveConfig(config: AiConfig, modelChannel: AdminPublicSetti
             publicChannels: modelChannel?.channels || [],
         };
     }
-    const models = modelChannel.availableModels;
-    const textModels = filterChannelModelsByCapability(modelChannel.channels, "text", models);
-    const imageModels = filterChannelModelsByCapability(modelChannel.channels, "image", models);
-    const videoModels = filterChannelModelsByCapability(modelChannel.channels, "video", models);
-    const audioModels = filterChannelModelsByCapability(modelChannel.channels, "audio", models);
+    const fanrenModels = normalizeModelList(Object.values(normalizeFanrenTokenModels(config.fanrenTokenModels)).flat());
+    const models = fanrenModels.length ? fanrenModels : modelChannel.availableModels;
+    const remoteChannels = FANREN_SSO_ENABLED
+        ? [{ ...(modelChannel.channels[0] || { id: "fanren-main", protocol: "openai" as const, name: "凡人主站", baseUrl: FANREN_DEFAULT_BASE_URL, weight: 1, timeout: 600, enabled: true, remark: "主站账号渠道" }), id: "fanren-main", models }]
+        : modelChannel.channels;
+    const textModels = filterChannelModelsByCapability(remoteChannels, "text", models);
+    const imageModels = filterChannelModelsByCapability(remoteChannels, "image", models);
+    const videoModels = filterChannelModelsByCapability(remoteChannels, "video", models);
+    const audioModels = filterChannelModelsByCapability(remoteChannels, "audio", models);
     const fallbackTextModel = validDefault(modelChannel.defaultTextModel, textModels) || preferredModel(textModels, isTextModelName) || textModels[0] || "";
     const fallbackModel = validDefault(modelChannel.defaultModel, textModels) || fallbackTextModel;
     const fallbackImageModel = validDefault(modelChannel.defaultImageModel, imageModels) || preferredModel(imageModels, isImageModelName);
@@ -218,7 +227,7 @@ function resolveEffectiveConfig(config: AiConfig, modelChannel: AdminPublicSetti
         textModel: textModels.includes(config.textModel) ? config.textModel : fallbackTextModel || fallbackModel,
         audioModel: audioModels.includes(config.audioModel) ? config.audioModel : fallbackAudioModel,
         systemPrompt: modelChannel.systemPrompt,
-        publicChannels: modelChannel.channels || [],
+        publicChannels: remoteChannels || [],
     };
 }
 
@@ -363,7 +372,7 @@ export function resolveModelForCapability(config: AiConfig, currentModel: string
 
 function isAiConfigReady(config: AiConfig, model: string) {
     const channel = localChannelForActiveModel({ ...config, model });
-    return Boolean(model.trim()) && (config.channelMode === "remote" ? (!FANREN_SSO_ENABLED || config.fanrenTokenId > 0) : Boolean(channel?.baseUrl.trim() && channel?.apiKey.trim()));
+    return Boolean(model.trim()) && (config.channelMode === "remote" ? (!FANREN_SSO_ENABLED || normalizeFanrenTokenIds(config).length > 0) : Boolean(channel?.baseUrl.trim() && channel?.apiKey.trim()));
 }
 
 export const useConfigStore = create<ConfigStore>()(
@@ -414,7 +423,7 @@ export const useConfigStore = create<ConfigStore>()(
                                     defaultTextModel: textModels[0] || "",
                                     systemPrompt: "",
                                     systemPrompts: { image: "", video: "", text: "", workflow: "", workflowAgent: "" },
-                                    allowCustomChannel: false,
+                                    allowCustomChannel: true,
                                     allowUserRemoteChannel: true,
                                 },
                                 auth: { allowRegister: false, linuxDo: { enabled: false } },
@@ -455,7 +464,9 @@ export const useConfigStore = create<ConfigStore>()(
                         textChannelId: config.textChannelId || localChannels[0]?.id || "",
                         audioChannelId: config.audioChannelId || localChannels[0]?.id || "",
                         activeChannelId: config.activeChannelId || "",
-                        fanrenTokenId: Number(config.fanrenTokenId) || 0,
+                        fanrenTokenIds: normalizeFanrenTokenIds(config),
+                        fanrenTokenId: normalizeFanrenTokenIds(config)[0] || 0,
+                        fanrenTokenModels: normalizeFanrenTokenModels(config.fanrenTokenModels),
                         syncStorageConfig: config.syncStorageConfig === true,
                         syncWebDAVStorageConfig: config.syncWebDAVStorageConfig === true,
                         channelMode: config.channelMode || "remote",
@@ -501,6 +512,25 @@ export const useConfigStore = create<ConfigStore>()(
 
 function normalizeModelList(models: string[]) {
     return Array.from(new Set((models || []).map((model) => model.trim()).filter(Boolean)));
+}
+
+export function normalizeFanrenTokenIds(config: Partial<AiConfig>) {
+    const configured = Array.isArray(config.fanrenTokenIds) ? config.fanrenTokenIds : [];
+    const legacy = Number(config.fanrenTokenId) || 0;
+    return Array.from(new Set([...configured, legacy].map(Number).filter((id) => Number.isInteger(id) && id > 0)));
+}
+
+export function normalizeFanrenTokenModels(value?: Record<string, string[]>): Record<string, string[]> {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    return Object.fromEntries(Object.entries(value).map(([id, models]) => [id, normalizeModelList(Array.isArray(models) ? models : [])]).filter(([, models]) => models.length));
+}
+
+export function fanrenTokenIdForModel(config: Partial<AiConfig>, model?: string) {
+    const ids = normalizeFanrenTokenIds(config);
+    const targetModel = (model || config.model || "").trim();
+    if (!targetModel) return ids[0] || 0;
+    const modelMap = normalizeFanrenTokenModels(config.fanrenTokenModels);
+    return ids.find((id) => modelMap[String(id)]?.includes(targetModel)) || ids[0] || 0;
 }
 
 export function useEffectiveConfig() {

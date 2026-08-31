@@ -7,7 +7,7 @@ import { ChannelModelSelectorModal } from "@/components/channel-model-selector-m
 import { GrokTtsVoiceSelect } from "@/components/grok-tts-voice-select";
 import { ModelPicker } from "@/components/model-picker";
 import { fetchImageModels } from "@/services/api/image";
-import { fetchFanrenAccountKeys, type FanrenAccountKey } from "@/services/api/fanren-account";
+import { fetchFanrenAccountKeys, fetchFanrenKeyModels, type FanrenAccountKey } from "@/services/api/fanren-account";
 import { fetchUserConfig, measureUserStorageProvider, syncUserModelConfig, syncUserStorageProvider } from "@/services/api/user-config";
 import { clearStorageConfigCache as clearFileStorageCache } from "@/services/file-storage";
 import { clearStorageConfigCache as clearImageStorageCache, defaultUserStorageProvider, defaultUserWebDAVStorageProvider, loadStorageConfig, loadUserS3StorageProvider, loadUserWebDAVStorageProvider, saveUserStorageProvider, saveUserWebDAVStorageProvider, type UserStorageProvider } from "@/services/image-storage";
@@ -18,7 +18,7 @@ import { FANREN_SSO_ENABLED } from "@/lib/fanren";
 import { geminiTtsVoiceOptions, normalizeGeminiTtsVoice } from "@/lib/gemini-tts";
 import { isMimoPresetTtsModel, isMimoTtsModel, isMimoVoiceCloneModel, isMimoVoiceDesignModel, mimoTtsFormatOptions, mimoTtsVoiceOptions } from "@/lib/mimo-tts";
 import { modelChannelApiKeyUrls, modelChannelDefaultBaseUrls } from "@/lib/model-channel";
-import { filterChannelModelsByCapability, normalizeLocalChannels, useConfigStore, useEffectiveConfig, type AiConfig, type LocalModelChannel, type ModelCapability } from "@/stores/use-config-store";
+import { filterChannelModelsByCapability, filterModelsByCapability, normalizeFanrenTokenIds, normalizeLocalChannels, useConfigStore, useEffectiveConfig, type AiConfig, type LocalModelChannel, type ModelCapability } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
 
 type ModelGroup = {
@@ -41,6 +41,7 @@ export function AppConfigModal() {
     const { message } = App.useApp();
     const [loadingModels, setLoadingModels] = useState(false);
     const [loadingFanrenKeys, setLoadingFanrenKeys] = useState(false);
+    const [loadingFanrenModels, setLoadingFanrenModels] = useState(false);
     const [fanrenKeys, setFanrenKeys] = useState<FanrenAccountKey[]>([]);
     const [savingConfig, setSavingConfig] = useState(false);
     const [modelSelectChannelId, setModelSelectChannelId] = useState("");
@@ -65,7 +66,7 @@ export function AppConfigModal() {
     const modelChannel = publicSettings?.modelChannel;
     const isLoggedIn = Boolean(token && user);
     const canUseRemoteChannel = isLoggedIn && (FANREN_SSO_ENABLED || user?.role === "admin" || modelChannel?.allowUserRemoteChannel === true);
-    const allowCustomChannel = isLoggedIn && modelChannel?.allowCustomChannel === true;
+    const allowCustomChannel = isLoggedIn && (FANREN_SSO_ENABLED || modelChannel?.allowCustomChannel === true);
     const effectiveMode = canUseRemoteChannel ? (allowCustomChannel ? config.channelMode : "remote") : "local";
     const localModelConfig: AiConfig = effectiveMode === "local" && config.channelMode !== "local" ? { ...config, channelMode: "local" } : config;
     const modelConfig = effectiveMode === "remote" ? effectiveConfig : localModelConfig;
@@ -75,6 +76,8 @@ export function AppConfigModal() {
     const geminiTts = isGeminiTtsModel(config.audioModel) && isGeminiConfig({ ...modelConfig, model: config.audioModel, audioModel: config.audioModel }, config.audioModel);
     const modelSelectChannel = normalizeLocalChannels(config).find((channel) => channel.id === modelSelectChannelId);
     const isFanrenRemote = effectiveMode === "remote" && FANREN_SSO_ENABLED;
+    const selectedFanrenTokenIds = normalizeFanrenTokenIds(config);
+    const selectedFanrenModelCount = uniqueModels(selectedFanrenTokenIds.flatMap((id) => (config.fanrenTokenModels || {})[String(id)] || [])).length;
 
     useEffect(() => {
         setUserStorage(loadUserS3StorageProvider() || defaultUserStorageProvider());
@@ -127,17 +130,48 @@ export function AppConfigModal() {
         };
     }, [isConfigOpen]);
 
+    const refreshFanrenModels = async (keys = fanrenKeys, tokenIds = selectedFanrenTokenIds, showSuccess = true) => {
+        if (!token || !FANREN_SSO_ENABLED || !tokenIds.length) return;
+        setLoadingFanrenModels(true);
+        try {
+            const selectedKeys = tokenIds.map((id) => keys.find((key) => key.id === id)).filter((key): key is FanrenAccountKey => Boolean(key));
+            const results = await Promise.allSettled(selectedKeys.map((key) => fetchFanrenKeyModels(token, key)));
+            const previous = config.fanrenTokenModels || {};
+            const modelMap = Object.fromEntries(selectedKeys.map((key, index) => {
+                const result = results[index];
+                return [String(key.id), result.status === "fulfilled" ? uniqueModels(result.value) : previous[String(key.id)] || []];
+            }));
+            const models = uniqueModels(Object.values(modelMap).flat());
+            updateConfig("fanrenTokenModels", modelMap);
+            updateConfig("models", models);
+            updateConfig("imageModels", filterModelsByCapability(models, "image"));
+            updateConfig("videoModels", filterModelsByCapability(models, "video"));
+            updateConfig("textModels", filterModelsByCapability(models, "text"));
+            updateConfig("audioModels", filterModelsByCapability(models, "audio"));
+            const failedCount = results.filter((result) => result.status === "rejected").length;
+            if (failedCount) message.warning(`${failedCount} 个凡人 Key 的模型拉取失败，已保留上次成功结果`);
+            else if (showSuccess) message.success(`已拉取 ${models.length} 个可用模型`);
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "读取凡人模型失败");
+        } finally {
+            setLoadingFanrenModels(false);
+        }
+    };
+
     const loadFanrenKeys = async () => {
         if (!token || !FANREN_SSO_ENABLED) return;
         setLoadingFanrenKeys(true);
         try {
             const keys = await fetchFanrenAccountKeys(token);
             setFanrenKeys(keys);
-            const selected = keys.find((key) => key.id === config.fanrenTokenId);
-            if (!selected || selected.status !== 1) {
-                const firstEnabled = keys.find((key) => key.status === 1);
-                updateConfig("fanrenTokenId", firstEnabled?.id || 0);
-            }
+            const enabledIds = new Set(keys.filter((key) => key.status === 1).map((key) => key.id));
+            const selectedIds = selectedFanrenTokenIds.filter((id) => enabledIds.has(id));
+            const firstEnabled = keys.find((key) => key.status === 1);
+            const nextIds = selectedIds.length ? selectedIds : firstEnabled ? [firstEnabled.id] : [];
+            updateConfig("fanrenTokenIds", nextIds);
+            updateConfig("fanrenTokenId", nextIds[0] || 0);
+            if (nextIds.length) await refreshFanrenModels(keys, nextIds, false);
+            else updateConfig("fanrenTokenModels", {});
         } catch (error) {
             message.error(error instanceof Error ? error.message : "读取凡人 Key 失败");
         } finally {
@@ -149,11 +183,20 @@ export function AppConfigModal() {
         if (isConfigOpen && isFanrenRemote && token) void loadFanrenKeys();
     }, [isConfigOpen, isFanrenRemote, token]);
 
+    const selectFanrenKeys = async (tokenIds: number[]) => {
+        const enabledIds = new Set(fanrenKeys.filter((key) => key.status === 1).map((key) => key.id));
+        const nextIds = Array.from(new Set(tokenIds.map(Number).filter((id) => enabledIds.has(id))));
+        updateConfig("fanrenTokenIds", nextIds);
+        updateConfig("fanrenTokenId", nextIds[0] || 0);
+        updateConfig("fanrenTokenModels", Object.fromEntries(nextIds.map((id) => [String(id), (config.fanrenTokenModels || {})[String(id)] || []])));
+        if (nextIds.length) await refreshFanrenModels(fanrenKeys, nextIds);
+    };
+
     const finishConfig = async () => {
         const localIncomplete = effectiveMode === "local" && normalizeLocalChannels(config).some((channel) => !channel.baseUrl.trim() || !channel.apiKey.trim());
         const modelIncomplete = !modelConfig.imageModel.trim() || !modelConfig.videoModel.trim() || !modelConfig.textModel.trim();
-        if (isFanrenRemote && !config.fanrenTokenId) {
-            message.error("请选择一个可用的凡人 Key");
+        if (isFanrenRemote && !selectedFanrenTokenIds.length) {
+            message.error("请至少选择一个可用的凡人 Key");
             return;
         }
         if (userStorage.enabled && userWebDAVStorage.enabled) {
@@ -340,8 +383,8 @@ export function AppConfigModal() {
                                 value={effectiveMode}
                                 onChange={(value) => updateConfig("channelMode", value as AiConfig["channelMode"])}
                                 options={[
-                                    { label: "本地直连", value: "local" },
-                                    { label: "云端渠道", value: "remote" },
+                                    { label: "自定义渠道", value: "local" },
+                                    { label: "凡人云端 Key", value: "remote" },
                                 ]}
                             />
                         </Form.Item>
@@ -351,8 +394,8 @@ export function AppConfigModal() {
                             <div className="mb-5 space-y-3 rounded-lg border border-stone-200 p-3 dark:border-stone-800">
                                 <div className="flex items-center justify-between gap-3">
                                     <div>
-                                        <div className="text-sm font-medium">本地模型渠道</div>
-                                        <div className="mt-1 text-xs text-stone-500">可为生图、视频、文本、音频分别选择不同渠道的模型。</div>
+                                        <div className="text-sm font-medium">自定义模型渠道</div>
+                                        <div className="mt-1 text-xs text-stone-500">填写其他服务的 Base URL 和 API Key，可为生图、视频、文本、音频分别选择不同渠道。</div>
                                     </div>
                                     <Button size="small" onClick={addLocalChannel}>
                                         新增渠道
@@ -417,20 +460,30 @@ export function AppConfigModal() {
                                         <div className="font-medium text-stone-900 dark:text-stone-100">凡人账号渠道</div>
                                         <div className="mt-1">请求使用主站 Key，分组、订阅、灵石扣费和日志均与凡人站同步。</div>
                                     </div>
-                                    <Button size="small" loading={loadingFanrenKeys} onClick={() => void loadFanrenKeys()}>刷新 Key</Button>
+                                    <div className="flex shrink-0 gap-2">
+                                        <Button size="small" loading={loadingFanrenKeys} onClick={() => void loadFanrenKeys()}>刷新 Key</Button>
+                                        <Button size="small" loading={loadingFanrenModels} disabled={!selectedFanrenTokenIds.length} onClick={() => void refreshFanrenModels()}>拉取模型</Button>
+                                    </div>
                                 </div>
                                 <Select
+                                    mode="multiple"
                                     className="mt-3 w-full"
-                                    placeholder="选择凡人 Key"
-                                    value={config.fanrenTokenId || undefined}
-                                    loading={loadingFanrenKeys}
+                                    placeholder="选择一个或多个凡人 Key"
+                                    value={selectedFanrenTokenIds}
+                                    loading={loadingFanrenKeys || loadingFanrenModels}
+                                    showSearch
+                                    optionFilterProp="label"
+                                    maxTagCount="responsive"
                                     options={fanrenKeys.map((key) => ({
                                         value: key.id,
                                         disabled: key.status !== 1,
-                                        label: `${key.name || `Key #${key.id}`} · ${key.group || "跟随账号分组"} · ${key.status === 1 ? "可用" : "不可用"}`,
+                                        label: `${key.name || `Key #${key.id}`} · ${key.group || "跟随账号分组"} · ${key.key || "已脱敏"} · ${key.status === 1 ? "可用" : "不可用"}`,
                                     }))}
-                                    onChange={(value) => updateConfig("fanrenTokenId", Number(value) || 0)}
+                                    onChange={(values) => void selectFanrenKeys(values.map(Number))}
                                 />
+                                <div className="mt-2 text-xs leading-5 text-stone-500">
+                                    已选 {selectedFanrenTokenIds.length} 个 Key，发现 {selectedFanrenModelCount} 个模型。系统按选择顺序作为优先级，并优先使用明确支持当前模型的 Key。
+                                </div>
                             </div>
                         ) : (
                             <div className="mb-5 rounded-lg border border-stone-200 p-3 text-sm text-stone-500 dark:border-stone-800">

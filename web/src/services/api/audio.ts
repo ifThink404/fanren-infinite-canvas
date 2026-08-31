@@ -9,7 +9,7 @@ import { isMimoPresetTtsModel, isMimoTtsModel, isMimoVoiceCloneModel, isMimoVoic
 import { geminiActionUrl, geminiDirectHeaders, geminiErrorMessage, isGeminiConfig, isGeminiTtsModel } from "@/lib/gemini";
 import { geminiPcmBase64ToWav, normalizeGeminiTtsVoice } from "@/lib/gemini-tts";
 import { resolveMediaUrl, uploadMediaFile, type UploadedFile } from "@/services/file-storage";
-import { buildApiUrl, channelIdForActiveModel, localChannelForActiveModel, type AiConfig } from "@/stores/use-config-store";
+import { buildApiUrl, channelIdForActiveModel, fanrenTokenIdForModel, localChannelForActiveModel, type AiConfig } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
 import type { ReferenceAudio } from "@/types/media";
 
@@ -48,12 +48,13 @@ function aiApiUrl(config: AiConfig, path: string) {
     return buildApiUrl(channel?.baseUrl || config.baseUrl, path);
 }
 
-function aiHeaders(config: AiConfig): Record<string, string> {
+function aiHeaders(config: AiConfig, model = config.model): Record<string, string> {
     const token = useUserStore.getState().token;
     if (isFanrenIntegratedConfig(config)) {
         if (!token) throw new Error("请先登录凡人站账号");
-        if (!config.fanrenTokenId) throw new Error("请先选择凡人 Key");
-        return { Authorization: `Bearer ${token}`, [FANREN_TOKEN_ID_HEADER]: String(config.fanrenTokenId) };
+        const fanrenTokenId = fanrenTokenIdForModel(config, model);
+        if (!fanrenTokenId) throw new Error("请先选择凡人 Key");
+        return { Authorization: `Bearer ${token}`, [FANREN_TOKEN_ID_HEADER]: String(fanrenTokenId) };
     }
     if (config.channelMode === "remote") {
         return {
@@ -86,7 +87,7 @@ export function fetchGrokTtsVoices(config: AiConfig, model: string) {
     const existing = grokTtsVoiceRequests.get(requestKey);
     if (existing) return existing;
 
-    const request = axios.get<{ voices?: GrokTtsVoice[] }>(aiApiUrl(requestConfig, "/tts/voices"), { headers: aiHeaders(requestConfig), params: { model } })
+    const request = axios.get<{ voices?: GrokTtsVoice[] }>(aiApiUrl(requestConfig, "/tts/voices"), { headers: aiHeaders(requestConfig, model), params: { model } })
         .then((response) => Array.isArray(response.data.voices) ? response.data.voices.filter((voice) => Boolean(voice.voice_id)) : [])
         .finally(() => grokTtsVoiceRequests.delete(requestKey));
     grokTtsVoiceRequests.set(requestKey, request);
@@ -106,7 +107,7 @@ export async function requestAudioGeneration(config: AiConfig, prompt: string, r
             const response = await axios.post<GeminiAudioResponse>(
                 usesAccountProxy(config) ? appPath("/api/v1/audio/speech") : geminiActionUrl(channel?.baseUrl || config.baseUrl, model, "generateContent"),
                 body,
-                { headers: usesAccountProxy(config) ? aiHeaders(config) : geminiDirectHeaders(config) },
+                { headers: usesAccountProxy(config) ? aiHeaders(config, model) : geminiDirectHeaders(config) },
             );
             refreshRemoteUser(config);
             return decodeGeminiAudio(response.data);
@@ -114,13 +115,13 @@ export async function requestAudioGeneration(config: AiConfig, prompt: string, r
         if (isMimoTtsModel(model) && !usesAccountProxy(config)) {
             const format = normalizeMimoTtsFormat(config.mimoTtsFormat);
             const body = await buildMiMoNativeRequest(config, model, prompt, referenceAudio);
-            const response = await axios.post<MiMoAudioResponse>(aiApiUrl(config, "/chat/completions"), body, { headers: aiHeaders(config) });
+            const response = await axios.post<MiMoAudioResponse>(aiApiUrl(config, "/chat/completions"), body, { headers: aiHeaders(config, model) });
             return decodeMiMoAudio(response.data, format);
         }
 
         const format = audioResponseFormat(config, model);
         const body = await buildAudioSpeechRequest(config, model, prompt, referenceAudio);
-        const response = await axios.post<Blob>(aiApiUrl(config, "/audio/speech"), body, { headers: aiHeaders(config), responseType: "blob" });
+        const response = await axios.post<Blob>(aiApiUrl(config, "/audio/speech"), body, { headers: aiHeaders(config, model), responseType: "blob" });
         await assertAudioBlob(response.data);
         refreshRemoteUser(config);
         return response.data.type.startsWith("audio/") ? response.data : new Blob([response.data], { type: audioMimeType(format) });
@@ -162,7 +163,7 @@ export async function createCanvasAudioTask(config: AiConfig, prompt: string, op
 
     const response = await fetch(appPath("/api/v1/canvas/audio-tasks"), {
         method: "POST",
-        headers: aiHeaders(config),
+        headers: aiHeaders(config, model),
         body: JSON.stringify({
             endpoint: "/audio/speech",
             nodeId: options.nodeId || "",

@@ -600,7 +600,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             imageTargets.forEach((node) => {
                 if (pollingImageNodeIdsRef.current.has(node.id) || !node.metadata?.imageTaskId) return;
                 pollingImageNodeIdsRef.current.add(node.id);
-                void pollCanvasImageTaskStatus(node.metadata.imageTaskId)
+                void pollCanvasImageTaskStatus(node.metadata.imageTaskId, node.metadata.model || effectiveConfig.imageModel || effectiveConfig.model)
                     .then((task) => {
                         setNodes((prev) => applyCanvasImageTaskUpdate(prev, node.id, task, node.metadata?.startedAt || Date.now(), { width: node.width, height: node.height }));
                         setConnections((prev) => applyCanvasImageTaskConnections(prev, node.id, task));

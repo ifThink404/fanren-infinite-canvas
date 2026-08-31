@@ -20,11 +20,9 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
     const hydrateUser = useUserStore((state) => state.hydrateUser);
     const loadPublicSettings = useConfigStore((state) => state.loadPublicSettings);
     const publicSettings = useConfigStore((state) => state.publicSettings);
-    const channelMode = useConfigStore((state) => state.config.channelMode);
     const updateConfig = useConfigStore((state) => state.updateConfig);
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
     const isLoginPage = pathname === "/login" || pathname === "/admin/login";
-    const adminRemoteTokenRef = useRef("");
 
     useEffect(() => {
         void loadPublicSettings();
@@ -33,12 +31,6 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
     useEffect(() => {
         if (!isLoginPage) void hydrateUser();
     }, [hydrateUser, isLoginPage]);
-
-    useEffect(() => {
-        if (!token || user?.role !== "admin" || adminRemoteTokenRef.current === token) return;
-        adminRemoteTokenRef.current = token;
-        if (channelMode !== "remote") updateConfig("channelMode", "remote");
-    }, [channelMode, token, updateConfig, user?.role]);
 
     useEffect(() => {
         if (!token || !user?.id) return;

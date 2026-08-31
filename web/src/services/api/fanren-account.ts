@@ -6,6 +6,8 @@ export type FanrenAccountKey = {
     key: string;
     status: number;
     group: string;
+    model_limits_enabled: boolean;
+    model_limits: string;
     remain_quota: number;
     used_quota: number;
     unlimited_quota: boolean;
@@ -82,12 +84,31 @@ export async function fetchFanrenAccountKeys(token: string) {
     return payload.data.items;
 }
 
-export async function fetchFanrenModels(token: string) {
-    const response = await fetch("/api/user/models", { headers: mainApiHeaders(token), credentials: "include" });
+export async function fetchFanrenModels(token: string, group = "") {
+    const query = group.trim() ? `?group=${encodeURIComponent(group.trim())}` : "";
+    const response = await fetch(`/api/user/models${query}`, { headers: mainApiHeaders(token), credentials: "include" });
     if (!response.ok) throw new Error("无法读取凡人模型");
     const payload = (await response.json()) as FanrenEnvelope<string[]>;
     if (!payload.success || !Array.isArray(payload.data)) throw new Error(payload.message || "无法读取凡人模型");
     return payload.data;
+}
+
+export async function fetchFanrenKeyModels(token: string, key: FanrenAccountKey) {
+    const groups = new Set<string>();
+    if (key.group.trim()) groups.add(key.group.trim());
+    if (key.group.trim() === "auto" && key.routing_groups.trim()) {
+        try {
+            const routingGroups = JSON.parse(key.routing_groups) as unknown;
+            if (Array.isArray(routingGroups)) routingGroups.filter((group): group is string => typeof group === "string").forEach((group) => groups.add(group.trim()));
+        } catch {
+            // Keep the key's primary group when routing_groups is malformed.
+        }
+    }
+    const modelLists = groups.size ? await Promise.all(Array.from(groups, (group) => fetchFanrenModels(token, group))) : [await fetchFanrenModels(token)];
+    const models = Array.from(new Set(modelLists.flat()));
+    if (!key.model_limits_enabled) return models;
+    const limits = new Set(key.model_limits.split(",").map((model) => model.trim()).filter(Boolean));
+    return models.filter((model) => limits.has(model));
 }
 
 export async function logoutFanrenSession(token: string) {
