@@ -15,6 +15,8 @@ RUN node ./node_modules/next/dist/bin/next build
 FROM golang:1.25-alpine AS api-build
 
 WORKDIR /app
+ARG GOPROXY="https://goproxy.cn,direct"
+ENV GOPROXY=$GOPROXY
 COPY go.mod go.sum ./
 COPY config ./config
 COPY handler ./handler
@@ -24,7 +26,7 @@ COPY repository ./repository
 COPY router ./router
 COPY service ./service
 COPY main.go ./
-RUN go build -o /server .
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build go build -o /server .
 
 # 运行镜像：Next.js 对外监听 3000，Go 只在容器内部监听 8080。
 FROM node:22-bookworm-slim
