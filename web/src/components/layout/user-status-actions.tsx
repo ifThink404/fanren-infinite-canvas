@@ -12,6 +12,7 @@ import { VersionReleaseModal } from "@/components/layout/version-release-modal";
 import { CreditSymbol } from "@/constant/credits";
 import { cn } from "@/lib/utils";
 import { canvasThemes } from "@/lib/canvas-theme";
+import { FANREN_SSO_ENABLED } from "@/lib/fanren";
 import { useConfigStore } from "@/stores/use-config-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { useUserStore } from "@/stores/use-user-store";
@@ -62,11 +63,17 @@ export function UserStatusActions({ showConfig = true, variant = "default", onOp
             <VersionReleaseModal style={versionStyle} />
             <GitHubLink className={cn("bg-transparent hover:bg-transparent dark:hover:bg-transparent", gitHubClassName)} style={gitHubStyle} />
             {variant === "canvas" && user ? (
-                <Tooltip title="当前算力点余额" placement="bottom">
-                    <div className="flex h-8 shrink-0 items-center gap-1.5 px-1.5 text-xs font-medium tabular-nums opacity-75 transition hover:opacity-100" style={{ color: canvasTheme.node.text }}>
-                        <CreditSymbol className="text-sm leading-none" />
-                        <span>{credits.toLocaleString()}</span>
-                    </div>
+                <Tooltip title={FANREN_SSO_ENABLED ? "Key、灵石和账单由凡人主站统一管理" : "当前算力点余额"} placement="bottom">
+                    {FANREN_SSO_ENABLED ? (
+                        <a href="/wallet" className="flex h-8 shrink-0 items-center px-1.5 text-xs font-medium opacity-75 transition hover:opacity-100" style={{ color: canvasTheme.node.text }}>
+                            凡人账户
+                        </a>
+                    ) : (
+                        <div className="flex h-8 shrink-0 items-center gap-1.5 px-1.5 text-xs font-medium tabular-nums opacity-75 transition hover:opacity-100" style={{ color: canvasTheme.node.text }}>
+                            <CreditSymbol className="text-sm leading-none" />
+                            <span>{credits.toLocaleString()}</span>
+                        </div>
+                    )}
                 </Tooltip>
             ) : null}
             {!user && onOpenShortcuts ? (

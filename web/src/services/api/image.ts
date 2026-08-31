@@ -1,14 +1,14 @@
 import axios from "axios";
 
 import { appPath } from "@/lib/app-path";
-import { isFanrenBaseUrl, supportsFanrenImageJobs } from "@/lib/fanren";
+import { FANREN_SSO_ENABLED, FANREN_TOKEN_ID_HEADER, isFanrenBaseUrl, isFanrenIntegratedConfig, supportsFanrenImageJobs } from "@/lib/fanren";
 import { isMiniMaxChannel, miniMaxModels } from "@/lib/minimax-video";
 import { dataUrlToFile } from "@/lib/image-utils";
 import { isKIESeedreamLayerDecompositionModel } from "@/lib/kie-models";
 import { isMimoChannel, mimoModels } from "@/lib/mimo-tts";
 import { dataUrlToGeminiInlineData, geminiActionUrl, geminiDirectHeaders, geminiErrorMessage, isGeminiConfig, normalizeGeminiBaseUrl } from "@/lib/gemini";
 import { imageToDataUrl, resolveImageUrl } from "@/services/image-storage";
-import { buildApiUrl, channelIdForActiveModel, channelProtocolForConfig, directAIProviderForConfig, localChannelForActiveModel, type AiConfig } from "@/stores/use-config-store";
+import { buildApiUrl, channelIdForActiveModel, channelProtocolForConfig, directAIProviderForConfig, localChannelForActiveModel, useConfigStore, type AiConfig } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
 import type { ReferenceImage } from "@/types/image";
 import { nanoid } from "nanoid";
@@ -522,13 +522,23 @@ function usesAccountProxy(config: AiConfig) {
 }
 
 export function aiApiUrl(config: AiConfig, path: string) {
+    if (isFanrenIntegratedConfig(config)) return `/api/creative${path}`;
     if (usesAccountProxy(config)) return appPath(`/api/v1${path}`);
     const channel = localChannelForActiveModel(config);
     return buildApiUrl(channel?.baseUrl || config.baseUrl, path);
 }
 
-export function aiHeaders(config: AiConfig, contentType?: string) {
+export function aiHeaders(config: AiConfig, contentType?: string): Record<string, string> {
     const token = useUserStore.getState().token;
+    if (isFanrenIntegratedConfig(config)) {
+        if (!token) throw new Error("请先登录凡人站账号");
+        if (!config.fanrenTokenId) throw new Error("请先选择凡人 Key");
+        return {
+            Authorization: `Bearer ${token}`,
+            [FANREN_TOKEN_ID_HEADER]: String(config.fanrenTokenId),
+            ...(contentType ? { "Content-Type": contentType } : {}),
+        };
+    }
     if (config.channelMode === "remote" && !token) throw new Error("请先登录后再使用云端渠道");
     if (config.channelMode === "remote") {
         return {
@@ -1008,12 +1018,18 @@ export async function createCanvasImageTask(config: AiConfig & { seedIndex?: num
     }
     const params = createImageRequestParams({ ...config, count: "1" });
     const request = await createCanvasImageTaskRequest({ ...config, count: "1" }, prompt, references, params, options);
-    const response = await fetch(appPath("/api/v1/canvas/image-tasks"), request);
+    const integrated = isFanrenIntegratedConfig(config);
+    const response = await fetch(integrated ? "/api/creative/images/jobs" : appPath("/api/v1/canvas/image-tasks"), request);
     if (!response.ok) {
         const error = await fetchErrorDetail(response, "图片任务创建失败");
         throw new ImageRequestError(error.message, error.detail);
     }
-    const payload = (await response.json()) as { code?: number; msg?: string; data?: CanvasImageTask };
+    const payload = (await response.json()) as { code?: number; msg?: string; data?: CanvasImageTask; job?: FanrenImageJob };
+    if (integrated) {
+        const task = normalizeFanrenImageTask(payload, prompt, options);
+        refreshRemoteUser(config);
+        return task;
+    }
     if (payload.code !== 0 || !payload.data) throw new ImageRequestError(payload.msg || "图片任务创建失败", payload);
     refreshRemoteUser(config);
     return payload.data;
@@ -1022,14 +1038,17 @@ export async function createCanvasImageTask(config: AiConfig & { seedIndex?: num
 export async function pollCanvasImageTaskStatus(taskId: string): Promise<CanvasImageTask> {
     const token = useUserStore.getState().token;
     if (!token) throw new Error("请先登录后再使用云端渠道");
-    const response = await fetch(appPath(`/api/v1/canvas/image-tasks/${encodeURIComponent(taskId)}`), {
-        headers: { Authorization: `Bearer ${token}` },
+    const config = useConfigStore.getState().config;
+    const integrated = FANREN_SSO_ENABLED && config.channelMode === "remote";
+    const response = await fetch(integrated ? `/api/creative/images/jobs/${encodeURIComponent(taskId)}` : appPath(`/api/v1/canvas/image-tasks/${encodeURIComponent(taskId)}`), {
+        headers: integrated ? aiHeaders(config) : { Authorization: `Bearer ${token}` },
     });
     if (!response.ok) {
         const error = await fetchErrorDetail(response, "读取图片任务失败");
         throw new ImageRequestError(error.message, error.detail);
     }
-    const payload = (await response.json()) as { code?: number; msg?: string; data?: CanvasImageTask };
+    const payload = (await response.json()) as { code?: number; msg?: string; data?: CanvasImageTask; job?: FanrenImageJob };
+    if (integrated) return normalizeFanrenImageTask(payload, "", {});
     if (payload.code !== 0 || !payload.data) throw new ImageRequestError(payload.msg || "读取图片任务失败", payload);
     return payload.data;
 }
@@ -1045,7 +1064,7 @@ async function createCanvasImageTaskRequest(config: AiConfig & { seedIndex?: num
     const tokenHeaders = { ...aiHeaders(config), ...taskChannelHeader };
     const jsonHeaders = { ...aiHeaders(config, "application/json"), ...taskChannelHeader };
     const meta = { nodeId: options.nodeId || "", source: options.source || "canvas", sourceId: options.sourceId || "", clientTaskId: options.clientTaskId || "", prompt, channelId: resolvedTaskChannelId };
-    const fanrenImageJobs = isFanrenBaseUrl(activeChannel?.baseUrl || config.baseUrl) && supportsFanrenImageJobs(config.model);
+    const fanrenImageJobs = ((FANREN_SSO_ENABLED && config.channelMode === "remote") || isFanrenBaseUrl(activeChannel?.baseUrl || config.baseUrl)) && supportsFanrenImageJobs(config.model);
     if (fanrenImageJobs) {
         const inputImageDataUrls = references.length ? await Promise.all(references.map((image) => imageToDataUrl(image))) : [];
         const body: Record<string, unknown> = {
@@ -1055,6 +1074,9 @@ async function createCanvasImageTaskRequest(config: AiConfig & { seedIndex?: num
         };
         applyImageGenerationParams(body, config, params);
         if (params.n > 1) body.n = params.n;
+        if (FANREN_SSO_ENABLED && config.channelMode === "remote") {
+            return { method: "POST", headers: jsonHeaders, body: JSON.stringify(body) };
+        }
         return {
             method: "POST",
             headers: jsonHeaders,
@@ -1168,6 +1190,40 @@ async function createCanvasImageTaskRequest(config: AiConfig & { seedIndex?: num
         method: "POST",
         headers: jsonHeaders,
         body: JSON.stringify({ endpoint: "/images/generations", ...meta, request: body }),
+    };
+}
+
+type FanrenImageJob = {
+    id?: string | number;
+    model?: string;
+    status?: string;
+    error_message?: string;
+    assets?: Array<{ proxy_url?: string; thumbnail_url?: string }>;
+};
+
+function normalizeFanrenImageTask(payload: { code?: number; msg?: string; data?: CanvasImageTask; job?: FanrenImageJob }, prompt: string, options: Partial<CanvasImageTaskOptions>): CanvasImageTask {
+    if (payload.code !== undefined && payload.code !== 0) throw new ImageRequestError(payload.msg || "图片任务失败", payload);
+    const job = payload.job || (payload.data as unknown as { job?: FanrenImageJob } | undefined)?.job;
+    if (!job) {
+        if (payload.data) return payload.data;
+        throw new ImageRequestError(payload.msg || "图片任务没有返回任务 ID", payload);
+    }
+    const assets = Array.isArray(job.assets) ? job.assets : [];
+    const imageURLs = assets.map((asset) => String(asset.proxy_url || asset.thumbnail_url || "")).filter(Boolean);
+    const rawStatus = String(job.status || "queued").toLowerCase();
+    const status = rawStatus === "succeeded" || rawStatus === "completed" || rawStatus === "success" ? "completed" : rawStatus === "failed" || rawStatus === "failure" || rawStatus === "cancelled" ? "failed" : rawStatus === "running" || rawStatus === "processing" || rawStatus === "in_progress" ? "processing" : "queued";
+    return {
+        id: String(job.id || ""),
+        source: options.source || "canvas",
+        source_id: options.sourceId || "",
+        node_id: options.nodeId || "",
+        model: String(job.model || ""),
+        prompt,
+        status,
+        progress: status === "completed" || status === "failed" ? 100 : status === "processing" ? 50 : 0,
+        image_url: imageURLs[0],
+        image_urls: imageURLs.length > 1 ? imageURLs : undefined,
+        error: status === "failed" ? { message: String(job.error_message || "图片任务失败") } : undefined,
     };
 }
 
@@ -1497,6 +1553,7 @@ async function requestAgnesImageEdit(config: AiConfig & { seedIndex?: number; se
 
 export async function listCanvasImageTasks(config: AiConfig, sources: Array<"image-workbench" | "workflow" | "canvas"> = []) {
     if (!usesAccountProxy(config)) return [];
+    if (isFanrenIntegratedConfig(config)) return [];
     const query = sources.length ? `?${sources.map((source) => `source=${encodeURIComponent(source)}`).join("&")}` : "";
     const response = await fetch(appPath(`/api/v1/canvas/image-tasks${query}`), {
         headers: aiHeaders(config),
@@ -1513,6 +1570,7 @@ export async function listCanvasImageTasks(config: AiConfig, sources: Array<"ima
 export async function batchCanvasImageTaskStatus(config: AiConfig, ids: string[]) {
     const taskIds = Array.from(new Set(ids.map((id) => id.trim()).filter(Boolean)));
     if (!usesAccountProxy(config) || !taskIds.length) return [];
+    if (isFanrenIntegratedConfig(config)) return Promise.all(taskIds.map((id) => pollCanvasImageTaskStatus(id)));
     const response = await fetch(appPath("/api/v1/canvas/image-tasks/status"), {
         method: "POST",
         headers: aiHeaders(config, "application/json"),
@@ -1529,6 +1587,7 @@ export async function batchCanvasImageTaskStatus(config: AiConfig, ids: string[]
 
 export async function deleteCanvasImageTask(config: AiConfig, task?: CanvasImageTask | null) {
     if (!usesAccountProxy(config) || !task?.id) return;
+    if (isFanrenIntegratedConfig(config)) return;
     const response = await fetch(appPath(`/api/v1/canvas/image-tasks/${encodeURIComponent(task.id)}`), {
         method: "DELETE",
         headers: aiHeaders(config),

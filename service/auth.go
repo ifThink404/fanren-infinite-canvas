@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -11,13 +12,14 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"github.com/tigerowo/infinite-canvas/config"
 	"github.com/tigerowo/infinite-canvas/model"
 	"github.com/tigerowo/infinite-canvas/repository"
-	"github.com/golang-jwt/jwt/v5"
-	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -31,6 +33,30 @@ type TokenClaims struct {
 type userExtra struct {
 	LinuxDo any `json:"linuxDo,omitempty"`
 }
+
+type fanrenSelfResponse struct {
+	Success bool `json:"success"`
+	Data    struct {
+		ID          int    `json:"id"`
+		Username    string `json:"username"`
+		DisplayName string `json:"display_name"`
+		Email       string `json:"email"`
+		Role        int    `json:"role"`
+		Status      int    `json:"status"`
+	} `json:"data"`
+}
+
+type fanrenAuthCacheEntry struct {
+	user      model.AuthUser
+	expiresAt time.Time
+}
+
+var fanrenAuthCache = struct {
+	sync.Mutex
+	entries map[[sha256.Size]byte]fanrenAuthCacheEntry
+}{entries: make(map[[sha256.Size]byte]fanrenAuthCacheEntry)}
+
+var fanrenAuthHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
 func EnsureDefaultAdmin() error {
 	if strings.TrimSpace(config.Cfg.AdminUsername) == "" || strings.TrimSpace(config.Cfg.AdminPassword) == "" {
@@ -217,18 +243,70 @@ func ParseToken(tokenText string) (TokenClaims, error) {
 }
 
 func CurrentAuthUser(tokenText string) (model.AuthUser, bool) {
-	claims, err := ParseToken(tokenText)
+	if !config.Cfg.FanrenSSORequired {
+		claims, err := ParseToken(tokenText)
+		if err == nil {
+			user, ok, err := repository.GetUserByID(claims.UserID)
+			if err == nil && ok && user.Status != model.UserStatusBan {
+				return model.PublicUser(user), true
+			}
+		}
+	}
+
+	baseURL := strings.TrimRight(strings.TrimSpace(config.Cfg.FanrenAuthBaseURL), "/")
+	if baseURL == "" {
+		return model.AuthUser{}, false
+	}
+
+	digest := sha256.Sum256([]byte(tokenText))
+	nowTime := time.Now()
+	fanrenAuthCache.Lock()
+	if entry, ok := fanrenAuthCache.entries[digest]; ok && nowTime.Before(entry.expiresAt) {
+		fanrenAuthCache.Unlock()
+		return entry.user, true
+	}
+	delete(fanrenAuthCache.entries, digest)
+	fanrenAuthCache.Unlock()
+
+	request, err := http.NewRequest(http.MethodGet, baseURL+"/api/user/self", nil)
 	if err != nil {
 		return model.AuthUser{}, false
 	}
-	user, ok, err := repository.GetUserByID(claims.UserID)
-	if err != nil || !ok {
+	request.Header.Set("Authorization", "Bearer "+tokenText)
+	response, err := fanrenAuthHTTPClient.Do(request)
+	if err != nil {
 		return model.AuthUser{}, false
 	}
-	if user.Status == model.UserStatusBan {
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
 		return model.AuthUser{}, false
 	}
-	return model.PublicUser(user), true
+	var payload fanrenSelfResponse
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil || !payload.Success || payload.Data.ID <= 0 || payload.Data.Status == 2 {
+		return model.AuthUser{}, false
+	}
+	username := strings.TrimSpace(payload.Data.Username)
+	if username == "" {
+		return model.AuthUser{}, false
+	}
+	displayName := strings.TrimSpace(payload.Data.DisplayName)
+	if displayName == "" {
+		displayName = username
+	}
+	user := model.AuthUser{
+		ID:          fmt.Sprintf("fanren:%d", payload.Data.ID),
+		Username:    username,
+		DisplayName: displayName,
+		Role:        model.UserRoleUser,
+	}
+	if payload.Data.Role >= 10 {
+		user.Role = model.UserRoleAdmin
+	}
+
+	fanrenAuthCache.Lock()
+	fanrenAuthCache.entries[digest] = fanrenAuthCacheEntry{user: user, expiresAt: nowTime.Add(30 * time.Second)}
+	fanrenAuthCache.Unlock()
+	return user, true
 }
 
 func ListUsers(q model.Query) (model.UserList, error) {

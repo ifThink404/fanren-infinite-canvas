@@ -7,12 +7,14 @@ import { ChannelModelSelectorModal } from "@/components/channel-model-selector-m
 import { GrokTtsVoiceSelect } from "@/components/grok-tts-voice-select";
 import { ModelPicker } from "@/components/model-picker";
 import { fetchImageModels } from "@/services/api/image";
+import { fetchFanrenAccountKeys, type FanrenAccountKey } from "@/services/api/fanren-account";
 import { fetchUserConfig, measureUserStorageProvider, syncUserModelConfig, syncUserStorageProvider } from "@/services/api/user-config";
 import { clearStorageConfigCache as clearFileStorageCache } from "@/services/file-storage";
 import { clearStorageConfigCache as clearImageStorageCache, defaultUserStorageProvider, defaultUserWebDAVStorageProvider, loadStorageConfig, loadUserS3StorageProvider, loadUserWebDAVStorageProvider, saveUserStorageProvider, saveUserWebDAVStorageProvider, type UserStorageProvider } from "@/services/image-storage";
 import { audioFormatOptions, audioVoiceOptions, glmTtsFormatOptions, glmTtsVoiceOptions, isGlmTtsModel, normalizeAudioSpeedValue, normalizeGlmTtsFormat, normalizeGlmTtsSpeed, normalizeGlmTtsVoice } from "@/lib/audio-generation";
 import { grokTtsFormatOptions, grokTtsLanguageOptions, isGrok2APITtsConfig, normalizeGrokTtsFormat, normalizeGrokTtsLanguage, normalizeGrokTtsSpeed } from "@/lib/grok-tts";
 import { isGeminiConfig, isGeminiTtsModel } from "@/lib/gemini";
+import { FANREN_SSO_ENABLED } from "@/lib/fanren";
 import { geminiTtsVoiceOptions, normalizeGeminiTtsVoice } from "@/lib/gemini-tts";
 import { isMimoPresetTtsModel, isMimoTtsModel, isMimoVoiceCloneModel, isMimoVoiceDesignModel, mimoTtsFormatOptions, mimoTtsVoiceOptions } from "@/lib/mimo-tts";
 import { modelChannelApiKeyUrls, modelChannelDefaultBaseUrls } from "@/lib/model-channel";
@@ -38,6 +40,8 @@ const modelGroups: ModelGroup[] = [
 export function AppConfigModal() {
     const { message } = App.useApp();
     const [loadingModels, setLoadingModels] = useState(false);
+    const [loadingFanrenKeys, setLoadingFanrenKeys] = useState(false);
+    const [fanrenKeys, setFanrenKeys] = useState<FanrenAccountKey[]>([]);
     const [savingConfig, setSavingConfig] = useState(false);
     const [modelSelectChannelId, setModelSelectChannelId] = useState("");
     const [remoteStorageSyncEnabled, setRemoteStorageSyncEnabled] = useState(false);
@@ -60,7 +64,7 @@ export function AppConfigModal() {
     const effectiveConfig = useEffectiveConfig();
     const modelChannel = publicSettings?.modelChannel;
     const isLoggedIn = Boolean(token && user);
-    const canUseRemoteChannel = isLoggedIn && (user?.role === "admin" || modelChannel?.allowUserRemoteChannel === true);
+    const canUseRemoteChannel = isLoggedIn && (FANREN_SSO_ENABLED || user?.role === "admin" || modelChannel?.allowUserRemoteChannel === true);
     const allowCustomChannel = isLoggedIn && modelChannel?.allowCustomChannel === true;
     const effectiveMode = canUseRemoteChannel ? (allowCustomChannel ? config.channelMode : "remote") : "local";
     const localModelConfig: AiConfig = effectiveMode === "local" && config.channelMode !== "local" ? { ...config, channelMode: "local" } : config;
@@ -70,6 +74,7 @@ export function AppConfigModal() {
     const grokTts = isGrok2APITtsConfig({ ...modelConfig, model: config.audioModel, audioModel: config.audioModel }, config.audioModel);
     const geminiTts = isGeminiTtsModel(config.audioModel) && isGeminiConfig({ ...modelConfig, model: config.audioModel, audioModel: config.audioModel }, config.audioModel);
     const modelSelectChannel = normalizeLocalChannels(config).find((channel) => channel.id === modelSelectChannelId);
+    const isFanrenRemote = effectiveMode === "remote" && FANREN_SSO_ENABLED;
 
     useEffect(() => {
         setUserStorage(loadUserS3StorageProvider() || defaultUserStorageProvider());
@@ -122,9 +127,35 @@ export function AppConfigModal() {
         };
     }, [isConfigOpen]);
 
+    const loadFanrenKeys = async () => {
+        if (!token || !FANREN_SSO_ENABLED) return;
+        setLoadingFanrenKeys(true);
+        try {
+            const keys = await fetchFanrenAccountKeys(token);
+            setFanrenKeys(keys);
+            const selected = keys.find((key) => key.id === config.fanrenTokenId);
+            if (!selected || selected.status !== 1) {
+                const firstEnabled = keys.find((key) => key.status === 1);
+                updateConfig("fanrenTokenId", firstEnabled?.id || 0);
+            }
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "读取凡人 Key 失败");
+        } finally {
+            setLoadingFanrenKeys(false);
+        }
+    };
+
+    useEffect(() => {
+        if (isConfigOpen && isFanrenRemote && token) void loadFanrenKeys();
+    }, [isConfigOpen, isFanrenRemote, token]);
+
     const finishConfig = async () => {
         const localIncomplete = effectiveMode === "local" && normalizeLocalChannels(config).some((channel) => !channel.baseUrl.trim() || !channel.apiKey.trim());
         const modelIncomplete = !modelConfig.imageModel.trim() || !modelConfig.videoModel.trim() || !modelConfig.textModel.trim();
+        if (isFanrenRemote && !config.fanrenTokenId) {
+            message.error("请选择一个可用的凡人 Key");
+            return;
+        }
         if (userStorage.enabled && userWebDAVStorage.enabled) {
             message.error("S3/R2 与 WebDAV 不能同时启用");
             return;
@@ -379,10 +410,34 @@ export function AppConfigModal() {
                             </div>
                         </>
                     ) : (
-                        <div className="mb-5 rounded-lg border border-stone-200 p-3 text-sm text-stone-500 dark:border-stone-800">
-                            <div className="font-medium text-stone-900 dark:text-stone-100">云端渠道</div>
-                            <div className="mt-1">由系统后台渠道转发请求，当前可用 {modelChannel?.availableModels.length || 0} 个模型。</div>
-                        </div>
+                        isFanrenRemote ? (
+                            <div className="mb-5 rounded-lg border border-emerald-200 bg-emerald-50/50 p-3 text-sm text-stone-600 dark:border-emerald-900/60 dark:bg-emerald-950/20 dark:text-stone-300">
+                                <div className="flex items-center justify-between gap-3">
+                                    <div>
+                                        <div className="font-medium text-stone-900 dark:text-stone-100">凡人账号渠道</div>
+                                        <div className="mt-1">请求使用主站 Key，分组、订阅、灵石扣费和日志均与凡人站同步。</div>
+                                    </div>
+                                    <Button size="small" loading={loadingFanrenKeys} onClick={() => void loadFanrenKeys()}>刷新 Key</Button>
+                                </div>
+                                <Select
+                                    className="mt-3 w-full"
+                                    placeholder="选择凡人 Key"
+                                    value={config.fanrenTokenId || undefined}
+                                    loading={loadingFanrenKeys}
+                                    options={fanrenKeys.map((key) => ({
+                                        value: key.id,
+                                        disabled: key.status !== 1,
+                                        label: `${key.name || `Key #${key.id}`} · ${key.group || "跟随账号分组"} · ${key.status === 1 ? "可用" : "不可用"}`,
+                                    }))}
+                                    onChange={(value) => updateConfig("fanrenTokenId", Number(value) || 0)}
+                                />
+                            </div>
+                        ) : (
+                            <div className="mb-5 rounded-lg border border-stone-200 p-3 text-sm text-stone-500 dark:border-stone-800">
+                                <div className="font-medium text-stone-900 dark:text-stone-100">云端渠道</div>
+                                <div className="mt-1">由系统后台渠道转发请求，当前可用 {modelChannel?.availableModels.length || 0} 个模型。</div>
+                            </div>
+                        )
                     )}
                     <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                         {modelGroups.map((group) => (

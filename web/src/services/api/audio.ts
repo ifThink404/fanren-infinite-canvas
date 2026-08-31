@@ -2,6 +2,7 @@ import axios from "axios";
 import { nanoid } from "nanoid";
 
 import { appPath } from "@/lib/app-path";
+import { FANREN_TOKEN_ID_HEADER, isFanrenIntegratedConfig } from "@/lib/fanren";
 import { audioMimeType, isGlmTtsModel, normalizeAudioFormatValue, normalizeAudioSpeedValue, normalizeAudioVoiceValue, normalizeGlmTtsFormat, normalizeGlmTtsSpeed, normalizeGlmTtsVoice } from "@/lib/audio-generation";
 import { isGrok2APITtsConfig, normalizeGrokTtsFormat, normalizeGrokTtsLanguage, normalizeGrokTtsSpeed, type GrokTtsVoice } from "@/lib/grok-tts";
 import { isMimoPresetTtsModel, isMimoTtsModel, isMimoVoiceCloneModel, isMimoVoiceDesignModel, normalizeMimoTtsFormat, normalizeMimoTtsVoice } from "@/lib/mimo-tts";
@@ -41,13 +42,19 @@ function usesAccountProxy(config: AiConfig) {
 }
 
 function aiApiUrl(config: AiConfig, path: string) {
+    if (isFanrenIntegratedConfig(config)) return `/api/creative${path}`;
     if (usesAccountProxy(config)) return appPath(`/api/v1${path}`);
     const channel = localChannelForActiveModel(config);
     return buildApiUrl(channel?.baseUrl || config.baseUrl, path);
 }
 
-function aiHeaders(config: AiConfig) {
+function aiHeaders(config: AiConfig): Record<string, string> {
     const token = useUserStore.getState().token;
+    if (isFanrenIntegratedConfig(config)) {
+        if (!token) throw new Error("请先登录凡人站账号");
+        if (!config.fanrenTokenId) throw new Error("请先选择凡人 Key");
+        return { Authorization: `Bearer ${token}`, [FANREN_TOKEN_ID_HEADER]: String(config.fanrenTokenId) };
+    }
     if (config.channelMode === "remote") {
         return {
             ...(token ? { Authorization: `Bearer ${token}` } : {}),

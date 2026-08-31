@@ -28,7 +28,7 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
 
     useEffect(() => {
         void loadPublicSettings();
-    }, [loadPublicSettings]);
+    }, [loadPublicSettings, token]);
 
     useEffect(() => {
         if (!isLoginPage) void hydrateUser();

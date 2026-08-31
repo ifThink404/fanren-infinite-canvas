@@ -6,6 +6,8 @@ import { persist } from "zustand/middleware";
 
 import { apiGet } from "@/services/api/request";
 import type { AdminPublicSettings } from "@/services/api/admin";
+import { fetchFanrenModels } from "@/services/api/fanren-account";
+import { FANREN_DEFAULT_BASE_URL, FANREN_SSO_ENABLED } from "@/lib/fanren";
 import { useUserStore } from "@/stores/use-user-store";
 
 export type LocalModelChannel = {
@@ -89,6 +91,7 @@ export type AiConfig = {
     videoChannelId: string;
     textChannelId: string;
     audioChannelId: string;
+    fanrenTokenId: number;
 };
 
 export const CONFIG_STORE_KEY = "infinite-canvas:ai_config_store";
@@ -162,6 +165,7 @@ export const defaultConfig: AiConfig = {
     videoChannelId: "",
     textChannelId: "",
     audioChannelId: "",
+    fanrenTokenId: 0,
 };
 
 type ConfigStore = {
@@ -359,7 +363,7 @@ export function resolveModelForCapability(config: AiConfig, currentModel: string
 
 function isAiConfigReady(config: AiConfig, model: string) {
     const channel = localChannelForActiveModel({ ...config, model });
-    return Boolean(model.trim()) && (config.channelMode === "remote" || Boolean(channel?.baseUrl.trim() && channel?.apiKey.trim()));
+    return Boolean(model.trim()) && (config.channelMode === "remote" ? (!FANREN_SSO_ENABLED || config.fanrenTokenId > 0) : Boolean(channel?.baseUrl.trim() && channel?.apiKey.trim()));
 }
 
 export const useConfigStore = create<ConfigStore>()(
@@ -381,6 +385,44 @@ export const useConfigStore = create<ConfigStore>()(
                 if (get().isPublicSettingsLoading) return;
                 set({ isPublicSettingsLoading: true });
                 try {
+                    const token = useUserStore.getState().token;
+                    if (FANREN_SSO_ENABLED && token) {
+                        const availableModels = await fetchFanrenModels(token);
+                        const imageModels = filterModelsByCapability(availableModels, "image");
+                        const videoModels = filterModelsByCapability(availableModels, "video");
+                        const textModels = filterModelsByCapability(availableModels, "text");
+                        const channel = {
+                            id: "fanren-main",
+                            protocol: "openai" as const,
+                            name: "凡人主站",
+                            baseUrl: FANREN_DEFAULT_BASE_URL,
+                            models: availableModels,
+                            weight: 1,
+                            timeout: 600,
+                            enabled: true,
+                            remark: "主站账号渠道",
+                        };
+                        set({
+                            publicSettings: {
+                                modelChannel: {
+                                    availableModels,
+                                    modelCosts: [],
+                                    channels: [channel],
+                                    defaultModel: textModels[0] || availableModels[0] || "",
+                                    defaultImageModel: imageModels[0] || "",
+                                    defaultVideoModel: videoModels[0] || "",
+                                    defaultTextModel: textModels[0] || "",
+                                    systemPrompt: "",
+                                    systemPrompts: { image: "", video: "", text: "", workflow: "", workflowAgent: "" },
+                                    allowCustomChannel: false,
+                                    allowUserRemoteChannel: true,
+                                },
+                                auth: { allowRegister: false, linuxDo: { enabled: false } },
+                                storage: { mode: "local", allowUserProvider: false },
+                            },
+                        });
+                        return;
+                    }
                     set({ publicSettings: await apiGet<AdminPublicSettings>("/api/settings") });
                 } finally {
                     set({ isPublicSettingsLoading: false });
@@ -413,6 +455,7 @@ export const useConfigStore = create<ConfigStore>()(
                         textChannelId: config.textChannelId || localChannels[0]?.id || "",
                         audioChannelId: config.audioChannelId || localChannels[0]?.id || "",
                         activeChannelId: config.activeChannelId || "",
+                        fanrenTokenId: Number(config.fanrenTokenId) || 0,
                         syncStorageConfig: config.syncStorageConfig === true,
                         syncWebDAVStorageConfig: config.syncWebDAVStorageConfig === true,
                         channelMode: config.channelMode || "remote",
@@ -465,7 +508,7 @@ export function useEffectiveConfig() {
     const modelChannel = useConfigStore((state) => state.publicSettings?.modelChannel || null);
     const token = useUserStore((state) => state.token);
     const user = useUserStore((state) => state.user);
-    const canUseRemoteChannel = Boolean(token && user && (user.role === "admin" || modelChannel?.allowUserRemoteChannel === true));
+    const canUseRemoteChannel = Boolean(token && user && (FANREN_SSO_ENABLED || user.role === "admin" || modelChannel?.allowUserRemoteChannel === true));
     return useMemo(() => resolveEffectiveConfig(config, modelChannel, canUseRemoteChannel), [canUseRemoteChannel, config, modelChannel]);
 }
 

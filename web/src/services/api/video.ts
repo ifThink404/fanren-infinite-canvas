@@ -2,6 +2,7 @@ import axios from "axios";
 
 import { appPath } from "@/lib/app-path";
 import { dataUrlToFile, readFileAsDataUrl } from "@/lib/image-utils";
+import { FANREN_TOKEN_ID_HEADER, isFanrenIntegratedConfig } from "@/lib/fanren";
 import { isMiniMaxH3Config, normalizeMiniMaxH3Duration, normalizeMiniMaxH3Ratio, normalizeMiniMaxH3Resolution } from "@/lib/minimax-video";
 import { dataUrlToGeminiInlineData, geminiActionUrl, geminiDirectHeaders, geminiErrorMessage, geminiOperationUrl, isGeminiConfig, isGeminiVideoModel } from "@/lib/gemini";
 import { isGeminiVeo31Model, normalizeGeminiVideoDuration, normalizeGeminiVideoRatio, normalizeGeminiVideoResolution } from "@/lib/gemini-video";
@@ -40,6 +41,7 @@ function usesAccountProxy(config: AiConfig) {
 }
 
 function aiApiUrl(config: AiConfig, path: string) {
+    if (isFanrenIntegratedConfig(config)) return `/api/creative${path}`;
     if (usesAccountProxy(config)) return appPath(`/api/v1${path}`);
     const channel = localChannelForActiveModel(config);
     return buildApiUrl(channel?.baseUrl || config.baseUrl, path);
@@ -59,6 +61,9 @@ function aiVideoPollUrl(config: AiConfig, model: string, id: string) {
     if (!isAgnesVideoModel(model) || !id.startsWith("video_")) {
         return aiApiUrl(config, `/videos/${encodeURIComponent(id)}`);
     }
+    if (isFanrenIntegratedConfig(config)) {
+        return `/api/creative/videos/${encodeURIComponent(id)}`;
+    }
     if (usesAccountProxy(config)) {
         return appPath(`/api/v1/videos/${encodeURIComponent(id)}`);
     }
@@ -77,8 +82,13 @@ function agnesBaseUrl(baseUrl: string) {
     return normalized.toLowerCase().endsWith("/v1") ? normalized.slice(0, -3).replace(/\/+$/, "") : normalized;
 }
 
-function aiHeaders(config: AiConfig) {
+function aiHeaders(config: AiConfig): Record<string, string> {
     const token = useUserStore.getState().token;
+    if (isFanrenIntegratedConfig(config)) {
+        if (!token) throw new Error("请先登录凡人站账号");
+        if (!config.fanrenTokenId) throw new Error("请先选择凡人 Key");
+        return { Authorization: `Bearer ${token}`, [FANREN_TOKEN_ID_HEADER]: String(config.fanrenTokenId) };
+    }
     if (config.channelMode === "remote" && !token) throw new Error("请先登录后再使用云端渠道");
     if (config.channelMode === "remote") return { Authorization: `Bearer ${token}`, ...(channelIdForActiveModel(config) ? { "X-Model-Channel-ID": channelIdForActiveModel(config) } : {}) };
     if (token) return { Authorization: `Bearer ${token}`, ...(channelIdForActiveModel(config) ? { "X-User-Model-Channel-ID": channelIdForActiveModel(config) } : {}) };

@@ -26,6 +26,7 @@ export default function nextConfig(phase: string): NextConfig {
         },
         env: {
             NEXT_PUBLIC_BASE_PATH: basePath,
+            NEXT_PUBLIC_FANREN_SSO: process.env.NEXT_PUBLIC_FANREN_SSO || "false",
             NEXT_PUBLIC_APP_VERSION: localVersion,
             NEXT_PUBLIC_APP_RELEASES: JSON.stringify(releases),
         },

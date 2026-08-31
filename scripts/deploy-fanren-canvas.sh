@@ -25,6 +25,9 @@ RESTORE_DIR="${CANVAS_GATEWAY_RESTORE_DIR:-/opt/ai-stack-gateway/restore}"
 PUBLIC_URL="${CANVAS_PUBLIC_URL:-https://fanrenapi.com/creative/}"
 BASE_PATH="${CANVAS_BASE_PATH:-/creative}"
 GOPROXY="${CANVAS_GOPROXY:-https://goproxy.cn,direct}"
+FANREN_SSO="${CANVAS_FANREN_SSO:-true}"
+INTERNAL_BASE_PATH="/${BASE_PATH#/}"
+INTERNAL_BASE_PATH="${INTERNAL_BASE_PATH%/}"
 timestamp="$(date +%Y%m%d%H%M%S)"
 IMAGE="${CANVAS_IMAGE:-fanren-infinite-canvas:${timestamp}}"
 BUILD_RELEASE_DIR="${BUILD_DIR}/${timestamp}"
@@ -78,28 +81,45 @@ build_ssh "mkdir -p $(shell_quote "$BUILD_RELEASE_DIR")"
 git archive --format=tar HEAD | gzip -1 | build_ssh "gzip -d | tar -xf - -C $(shell_quote "$BUILD_RELEASE_DIR")"
 
 echo "[3/8] 在构建机生成镜像 ${IMAGE}"
-build_ssh "set -e; cd $(shell_quote "$BUILD_RELEASE_DIR"); docker build --build-arg NEXT_PUBLIC_BASE_PATH=$(shell_quote "$BASE_PATH") --build-arg GOPROXY=$(shell_quote "$GOPROXY") -t $(shell_quote "$IMAGE") ."
+build_ssh "set -e; cd $(shell_quote "$BUILD_RELEASE_DIR"); docker build --build-arg NEXT_PUBLIC_BASE_PATH=$(shell_quote "$BASE_PATH") --build-arg NEXT_PUBLIC_FANREN_SSO=$(shell_quote "$FANREN_SSO") --build-arg GOPROXY=$(shell_quote "$GOPROXY") -t $(shell_quote "$IMAGE") ."
 
 echo "[4/8] 构建机直传镜像到 ${TARGET_HOST}"
 build_ssh "set -o pipefail; docker save $(shell_quote "$IMAGE") | gzip -1 | ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=12 -i $(shell_quote "$IMAGE_TRANSFER_IDENTITY") -p $(shell_quote "$IMAGE_TRANSFER_PORT") $(shell_quote "$IMAGE_TRANSFER_TARGET") fanren-image-transfer-load"
 target_ssh "docker image inspect $(shell_quote "$IMAGE") >/dev/null"
 
 echo "[5/8] 更新 Netcup 独立画布容器"
+existing_env="$(target_ssh "if [ -f $(shell_quote "$TARGET_DIR/.env") ]; then cat $(shell_quote "$TARGET_DIR/.env"); fi" 2>/dev/null || true)"
+dotenv_value() {
+  printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -n 1
+}
 admin_password="${FANREN_CANVAS_ADMIN_PASSWORD:-}"
 if [[ -z "$admin_password" ]]; then
+  admin_password="$(dotenv_value "$existing_env" ADMIN_PASSWORD)"
+fi
+if [[ -n "$admin_password" ]]; then
+  echo "复用 Netcup 上已有的画布管理员密码。"
+else
   admin_password="$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9@#%+=' | cut -c1-24)"
   [[ -n "$admin_password" ]] || { echo "无法生成画布管理员密码" >&2; exit 1; }
   echo "画布管理员账号: admin"
   echo "画布管理员初始密码: ${admin_password}"
   echo "该密码仅写入 Netcup 的 ${TARGET_DIR}/.env，不会写入 Git。"
 fi
-jwt_secret="${FANREN_CANVAS_JWT_SECRET:-$(openssl rand -hex 32)}"
+jwt_secret="${FANREN_CANVAS_JWT_SECRET:-}"
+if [[ -z "$jwt_secret" ]]; then
+  jwt_secret="$(dotenv_value "$existing_env" JWT_SECRET)"
+fi
+if [[ -z "$jwt_secret" ]]; then
+  jwt_secret="$(openssl rand -hex 32)"
+fi
 env_content=$(cat <<EOF
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=${admin_password}
 JWT_SECRET=${jwt_secret}
 JWT_EXPIRE_HOURS=168
 PUBLIC_BASE_URL=${PUBLIC_URL%/}
+FANREN_AUTH_BASE_URL=https://fanrenapi.com
+FANREN_SSO_REQUIRED=true
 STORAGE_DRIVER=sqlite
 DATABASE_DSN=/app/data/infinite-canvas.db
 FANREN_IMAGE_JOB_POLL_SECONDS=${FANREN_IMAGE_JOB_POLL_SECONDS:-5}
@@ -119,7 +139,7 @@ services:
     ports:
       - 127.0.0.1:${TARGET_PORT}:3000
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000${INTERNAL_BASE_PATH}/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -129,7 +149,7 @@ target_ssh "mkdir -p $(shell_quote "$TARGET_DIR/data")"
 printf '%s\n' "$env_content" | target_ssh "umask 077; cat > $(shell_quote "$TARGET_DIR/.env")"
 printf '%s\n' "$compose_content" | target_ssh "cat > $(shell_quote "$TARGET_DIR/docker-compose.yml")"
 target_ssh "cd $(shell_quote "$TARGET_DIR") && docker compose up -d --remove-orphans"
-target_ssh "for i in \$(seq 1 30); do curl -fsS http://127.0.0.1:${TARGET_PORT}/api/health >/dev/null && exit 0; sleep 2; done; docker compose logs --tail=100; exit 1"
+target_ssh "for i in \$(seq 1 30); do curl -fsS http://127.0.0.1:${TARGET_PORT}${INTERNAL_BASE_PATH}/api/health >/dev/null && exit 0; sleep 2; done; docker compose logs --tail=100; exit 1"
 
 echo "[6/8] 建立 DMIT -> Netcup 持久隧道"
 tunnel_content=$(cat <<EOF
@@ -150,7 +170,7 @@ EOF
 )
 printf '%s\n' "$tunnel_content" | gateway_ssh "cat > /tmp/${GATEWAY_TUNNEL_SERVICE}"
 gateway_ssh "install -m 0644 /tmp/${GATEWAY_TUNNEL_SERVICE} /etc/systemd/system/${GATEWAY_TUNNEL_SERVICE}; systemctl daemon-reload; systemctl enable --now ${GATEWAY_TUNNEL_SERVICE}; systemctl is-active --quiet ${GATEWAY_TUNNEL_SERVICE}"
-gateway_ssh "for i in \$(seq 1 20); do curl -fsS http://127.0.0.1:${GATEWAY_PORT}/api/health >/dev/null && exit 0; sleep 2; done; systemctl status ${GATEWAY_TUNNEL_SERVICE} --no-pager; exit 1"
+gateway_ssh "for i in \$(seq 1 20); do curl -fsS http://127.0.0.1:${GATEWAY_PORT}${INTERNAL_BASE_PATH}/api/health >/dev/null && exit 0; sleep 2; done; systemctl status ${GATEWAY_TUNNEL_SERVICE} --no-pager; exit 1"
 
 echo "[7/8] 在 DMIT 的 fanrenapi.com HTTPS server 增加独立 /creative/ 路由"
 backup_path="${RESTORE_DIR}/fanren-canvas-${timestamp}.nginx.conf"
@@ -184,7 +204,7 @@ block = f'''    {marker}
         return 301 /creative/;
     }}
     location ^~ /creative/ {{
-        proxy_pass http://127.0.0.1:{port}/;
+        proxy_pass http://127.0.0.1:{port};
         proxy_http_version 1.1;
         proxy_buffering off;
         proxy_request_buffering off;

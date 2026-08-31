@@ -5,7 +5,7 @@ description: 在无限画布中使用凡人 API 的图像与视频能力
 
 # Fanren API 集成
 
-无限画布作为独立服务运行，项目、素材和异步任务保存在画布自己的数据目录中。New API / QuantumNous 只作为上游业务接口，不与画布共用数据库或运行时。
+无限画布作为独立服务运行，项目和素材保存在画布自己的数据目录中；凡人主站是唯一的登录、Key、订阅、灵石、渠道和异步任务账务来源。New API / QuantumNous 仍是主站的受保护项目身份，画布不与其共用数据库或运行时。
 
 ## 入口
 
@@ -19,36 +19,42 @@ https://fanrenapi.com/creative/
 
 ## 账号与计费
 
-画布账号与 Fanren 账号是两个独立的登录域。要让请求按 Fanren 用户的分组、订阅和灵石规则结算，请在画布的渠道配置中使用该用户自己的 Fanren API Key，Base URL 填：
+生产画布使用凡人站单点登录。用户进入画布后，浏览器通过同域主站会话刷新短期访问令牌；画布后端只向主站核验该令牌，并以稳定的 `fanren:<user_id>` 作为本地项目关联身份，不再创建第二套用户账号。
+
+画布配置中的 Key 选择器读取当前凡人账号的 Key 列表，只展示 Key 名称、脱敏 Key、分组和状态。用户提交时只发送 `token_id`：
+
+1. 凡人主站校验 Key 属于当前登录用户。
+2. 主站复用既有 TokenAuth、订阅、境界倍率、自动路由、灵石扣费和日志链路。
+3. 画布不接触、不保存、不通过 URL 传递 Key 明文。
 
 ```text
 https://fanrenapi.com
 ```
 
-不要把 API Key 放在跳转 URL、查询参数、日志或公开渠道配置中。当前入口只预填 Base URL，不携带密钥；用户首次使用时在画布配置中填写密钥。
+余额和使用结果以凡人主站为准；画布本地不会再扣除自己的 `credits`。
 
 ## 图像任务
 
-选择 Fanren 的 `gpt-image` 模型且已登录画布时，画布会：
+选择 Fanren 的 `gpt-image` 模型且已登录凡人站时，画布会：
 
-1. 创建本地持久化任务；
-2. 调用 Fanren `POST /v1/images/jobs`；
-3. 在服务端轮询 `GET /v1/images/jobs/{id}`；
-4. 将完成状态和图片地址写回画布任务记录。
+1. 通过主站专用代理提交 `POST /api/creative/images/jobs`，并携带 `X-Fanren-Token-ID`；
+2. 主站内部调用现有 `POST /v1/images/jobs`，按用户 Key 的真实权限和账务结算；
+3. 画布轮询主站 `GET /api/creative/images/jobs/{id}`；
+4. 将主站任务状态和图片地址呈现在画布节点中。
 
 图生图会将参考图转为 `input_images`，2K/4K 尺寸沿用画布的尺寸参数。任务失败或超时不会在画布侧重复提交，Fanren 侧的计费仍由 Fanren API Key 负责。
 
 ## 视频任务
 
-视频使用 Fanren 的 OpenAI 风格异步接口：
+视频通过凡人主站专用代理使用 OpenAI 风格异步接口：
 
 ```text
-POST /v1/videos
-GET  /v1/videos/{id}
-GET  /v1/videos/{id}/content
+POST /api/creative/videos
+GET  /api/creative/videos/{id}
+GET  /api/creative/videos/{id}/content
 ```
 
-画布保存任务 ID 并由后台轮询器更新状态，完成后通过内容接口读取视频。
+主站保存任务、计费和日志，画布只保存任务 ID 并轮询状态；完成后通过主站内容接口读取视频。
 
 ## 开源协议
 

@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
 
 import { fetchCurrentUser } from "@/services/api/auth";
+import { FANREN_SSO_ENABLED } from "@/lib/fanren";
 import { appPath } from "@/lib/app-path";
 import { useConfigStore } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
@@ -41,11 +42,20 @@ function LoginContent() {
     const login = useUserStore((state) => state.login);
     const register = useUserStore((state) => state.register);
     const setSession = useUserStore((state) => state.setSession);
+    const signInWithFanren = useUserStore((state) => state.signInWithFanren);
     const isLoading = useUserStore((state) => state.isLoading);
     const linuxDoEnabled = useConfigStore((state) => state.publicSettings?.auth?.linuxDo?.enabled === true);
     const allowRegister = useConfigStore((state) => state.publicSettings?.auth?.allowRegister !== false);
     const [mode, setMode] = useState<"login" | "register">("login");
+    const [ssoChecked, setSsoChecked] = useState(!FANREN_SSO_ENABLED);
     const redirect = safeRedirect(searchParams.get("redirect"));
+
+    useEffect(() => {
+        if (!FANREN_SSO_ENABLED) return;
+        void signInWithFanren()
+            .then(() => router.replace(redirect))
+            .catch(() => setSsoChecked(true));
+    }, [redirect, router, signInWithFanren]);
 
     useEffect(() => {
         const token = searchParams.get("token");
@@ -84,6 +94,29 @@ function LoginContent() {
             message.error(error instanceof Error ? error.message : "登录失败");
         }
     };
+
+    if (FANREN_SSO_ENABLED) {
+        return (
+            <main className="flex h-full min-h-0 items-center justify-center overflow-y-auto bg-background bg-[radial-gradient(#e5e7eb_1px,transparent_1px)] px-6 py-10 [background-size:16px_16px] dark:bg-[radial-gradient(rgba(245,245,245,.16)_1px,transparent_1px)]">
+                <section className="w-full max-w-[420px] text-center">
+                    <span
+                        className="mx-auto mb-4 block size-12 bg-stone-950 dark:bg-stone-100"
+                        style={{ mask: `url(${appPath("/logo.svg")}) center / contain no-repeat`, WebkitMask: `url(${appPath("/logo.svg")}) center / contain no-repeat` }}
+                        aria-label="无限画布"
+                    />
+                    <h1 className="text-3xl font-semibold tracking-normal text-stone-950 dark:text-stone-100">凡人账号登录</h1>
+                    <p className="mt-3 text-base leading-7 text-stone-500 dark:text-stone-400">无限画布使用凡人站账号、Key 和灵石账务。</p>
+                    {ssoChecked ? (
+                        <Button block type="primary" size="large" className="mt-7" href={`/sign-in?redirect=${encodeURIComponent("/creative/")}`}>
+                            返回凡人站登录
+                        </Button>
+                    ) : (
+                        <div className="mt-7 text-sm text-stone-500">正在检查凡人登录状态…</div>
+                    )}
+                </section>
+            </main>
+        );
+    }
 
     return (
         <main className="flex h-full min-h-0 items-center justify-center overflow-y-auto bg-background bg-[radial-gradient(#e5e7eb_1px,transparent_1px)] px-6 py-10 [background-size:16px_16px] dark:bg-[radial-gradient(rgba(245,245,244,.16)_1px,transparent_1px)]">
