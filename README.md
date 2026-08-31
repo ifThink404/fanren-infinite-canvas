@@ -31,7 +31,121 @@
   </a>
 </p>
 
-无限画布是一款面向图片，视频，音频，全能创作的开源工作台。它把画布编排、AI 图片、视频、音频生成、参考图编辑、对话助手、提示词库和素材沉淀放在同一个界面里，适合用来探索视觉方案并连续迭代图片结果
+无限画布是一款面向图片，视频，音频，全能创作的开源工作台。它把画布编排、AI 图片、视频、音频生成、参考图编辑、对话助手、提示词库和素材沉淀放在同一个界面里，适合用来探索视觉方案并连续迭代图片结果。
+
+本仓库同时维护凡人站集成版本：画布仍然独立运行，但生产环境使用凡人站作为统一的登录、Key、灵石、订阅、境界倍率、自动路由、日志和异步任务账务中心。集成设计与接口约定见 [Fanren API 集成说明](docs/overview/fanren-integration.md)。
+
+## 凡人 API 集成
+
+### 生产入口
+
+生产用户从凡人主站进入无限画布：
+
+```text
+https://fanrenapi.com/creative/
+```
+
+这是同一站点下的独立路径，不需要创建第二个画布账号。凡人主站的普通页面和 `cdn.fanrenapi.com` 的基础访问不依赖画布路由，画布故障时不会改变主站 API 的路由行为。
+
+### 账号、Key 与灵石
+
+凡人站是身份和账务的唯一来源：
+
+1. 用户在凡人主站登录，画布登录页跳转到主站登录并携带回跳地址。
+2. 画布后端用主站会话令牌向 `GET /api/user/self` 校验身份，不接受独立画布 JWT 作为生产用户身份。
+3. 画布配置弹窗从主站读取当前用户的 Key 列表，选择器展示 Key 名称、脱敏 Key、分组和状态；提交时只发送 `token_id`，不让用户手填 Key，也不把 Key 明文放进 URL。
+4. 主站根据用户当前订阅、灵蕴身份、境界倍率、分组路由和可用渠道完成扣费；画布不维护第二套余额，不在本地重复扣除灵石。
+5. 使用日志、异步任务归属和账单审计均以凡人主站记录为准。
+
+画布端发送 Key 选择头：
+
+```http
+Authorization: Bearer <凡人站会话令牌>
+X-Fanren-Token-ID: <当前用户拥有的token_id>
+```
+
+主站会再次校验 `token_id` 必须属于当前用户，然后在内部复用原有的 TokenAuth、订阅和计费链路。任何客户端都不应绕过这个校验直接提交其他用户的 Key。
+
+### 主站代理接口
+
+浏览器访问画布时，下面的请求由画布同源代理到凡人主站。主站再转入现有 `/v1` 转发链路：
+
+| 用途 | 方法与路径 |
+| --- | --- |
+| 图片异步提交 | `POST /api/creative/images/jobs` |
+| 查询图片任务 | `GET /api/creative/images/jobs/{id}` |
+| 图片同步生成 | `POST /api/creative/images/generations` |
+| 图片编辑 | `POST /api/creative/images/edits` |
+| 视频异步提交 | `POST /api/creative/videos` |
+| 查询视频任务 | `GET /api/creative/videos/{id}` |
+| 读取已完成视频 | `GET /api/creative/videos/{id}/content` |
+| Responses 对话 | `POST /api/creative/responses` |
+| Chat Completions 对话 | `POST /api/creative/chat/completions` |
+| 语音生成 | `POST /api/creative/audio/speech` |
+
+图片和视频任务均采用异步模式：提交接口只负责创建任务并返回任务 ID，画布按间隔轮询状态；完成后再读取结果。浏览器刷新不会重新提交任务，也不会因为轮询超时重复扣费。
+
+图片请求支持文生图、图生图、`1K`/`2K`/`4K` 尺寸和批量任务，具体可用能力由当前 Key、主站渠道和上游模型共同决定。画布会把参考图转换为主站代理约定的 `input_images` 字段；不要把上游地址或上游 Key 配置在画布前端。
+
+### 部署拓扑
+
+当前生产链路如下：
+
+```text
+浏览器
+  -> https://fanrenapi.com/creative/
+  -> DMIT Nginx: /creative/ 独立反向代理
+  -> DMIT 127.0.0.1:23011
+  -> SSH 隧道
+  -> fr-netcup-new 127.0.0.1:13011
+  -> fanren-infinite-canvas 容器
+```
+
+凡人主站的 `/api/creative/*` 仍由主站处理；`cdn.fanrenapi.com` 不指向画布。Nginx 同时配置了 `/creative` 根路径和 `/creative/` 子路径，避免 Next.js 根路由重定向循环。
+
+### 配置项
+
+生产集成至少需要以下配置：
+
+```dotenv
+FANREN_AUTH_BASE_URL=https://fanrenapi.com
+FANREN_SSO_REQUIRED=true
+PUBLIC_BASE_URL=https://fanrenapi.com/creative
+NEXT_PUBLIC_BASE_PATH=/creative
+NEXT_PUBLIC_FANREN_SSO=true
+FANREN_IMAGE_JOB_POLL_SECONDS=5
+FANREN_IMAGE_JOB_TIMEOUT_SECONDS=1800
+```
+
+本地独立开发可以将 `FANREN_SSO_REQUIRED=false`、`NEXT_PUBLIC_FANREN_SSO=false`，使用画布自己的本地登录和兼容 OpenAI 的 Base URL；生产环境必须保持 SSO 开启。完整变量示例见 [.env.example](.env.example)。
+
+### 构建、部署与回滚
+
+构建机直接构建镜像并传输到 `fr-netcup-new`，不会通过本机运行中的容器提供生产流量：
+
+```bash
+./scripts/deploy-fanren-canvas.sh
+```
+
+脚本会检查工作树、在构建机生成镜像、更新 Netcup 画布容器、确认健康检查、建立 DMIT 持久 SSH 隧道并验证凡人主站、CDN 和画布入口。管理员密码和 JWT 密钥复用目标机已有 `.env`；首次部署时脚本只在终端显示一次生成的初始密码，敏感配置不会写入 Git。
+
+每次部署会在网关的 restore 目录保存 Nginx 配置备份。若新版本健康检查失败，先停止继续切流，使用对应备份恢复 Nginx，再在 Netcup 使用上一镜像启动容器。主站版本发布仍使用主站自己的蓝绿脚本；画布仓库只负责画布镜像和 `/creative/` 路由。
+
+### 本地联调
+
+本地需要同时能访问凡人主站：
+
+```bash
+cp .env.example .env
+# .env 中开启 FANREN_AUTH_BASE_URL 和 FANREN_SSO_REQUIRED
+go run .
+
+cd web
+bun install
+NEXT_PUBLIC_FANREN_SSO=true NEXT_PUBLIC_BASE_PATH=/creative bun run dev
+```
+
+联调验收顺序：先确认 `/creative/login` 能跳转凡人登录；登录后确认 Key 下拉列表只出现当前账号的 Key；再用一个低成本模型验证提交、轮询、失败展示和日志归属。没有有效的凡人会话和 Key 时，不要用伪造的 `token_id` 代替真实扣费测试。
 
 ## 赞助商
 
@@ -96,8 +210,8 @@
 ## 快速开始
 
 ```bash
-git clone https://github.com/tigerowo/infinite-canvas.git
-cd infinite-canvas
+git clone https://github.com/ifThink404/fanren-infinite-canvas.git
+cd fanren-infinite-canvas
 cp .env.example .env
 # 修改默认账号密码等信息
 docker compose up -d --build
@@ -125,16 +239,17 @@ docker compose -f docker-compose.local.yml up -d --build
 
 如需要拉取提示词，可前往:`http://localhost:3000/admin/prompts`
 
-## New API 自动配置
+## New API 兼容模式
 
-如果使用 New API，可在 `系统设置 -> 聊天方式 -> 添加聊天设置` 中填入：
+本项目保留上游 New API 的手动配置能力，适合本地独立开发或连接其他 OpenAI 兼容网关。可在 `系统设置 -> 聊天方式 -> 添加聊天设置` 中填入：
 
 ```text
 https://infinite-canvas-cpco.onrender.com?apiKey={key}&baseUrl={address}
 ```
 
-跳转后会自动打开配置弹窗并填入 API Key 和 Base URL。
-如果自己部署了，可以把 `https://infinite-canvas-cpco.onrender.com` 替换成你部署的地址。
+跳转后会自动打开配置弹窗并填入 API Key 和 Base URL。如果自己部署了，可以把 `https://infinite-canvas-cpco.onrender.com` 替换成你部署的地址。
+
+这条 `apiKey` 查询参数方式只用于兼容模式，不属于凡人生产集成。凡人生产入口使用同源 SSO 和配置弹窗中的 Key 下拉选择，不把 Key 放进 URL；不要把真实 Key 写入 README、Issue、截图、构建参数或 Git 历史。New API / QuantumNous 仍是上游与主站的受保护项目身份，二次开发请保留原作者信息和许可证要求。
 
 ## 效果展示
 
