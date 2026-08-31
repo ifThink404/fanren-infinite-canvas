@@ -9,7 +9,7 @@ RUN --mount=type=cache,target=/root/.bun/install/cache bun install --frozen-lock
 COPY VERSION /app/VERSION
 COPY CHANGELOG.md /app/CHANGELOG.md
 COPY web ./
-RUN bun run build
+RUN node ./node_modules/next/dist/bin/next build
 
 # 构建 Go 后端入口。
 FROM golang:1.25-alpine AS api-build
