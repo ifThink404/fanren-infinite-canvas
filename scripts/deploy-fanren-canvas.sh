@@ -74,7 +74,7 @@ gateway_ssh "nginx -t >/dev/null"
 
 echo "[2/8] 传输已提交源码到构建机 ${BUILD_HOST}:${BUILD_RELEASE_DIR}"
 build_ssh "mkdir -p $(shell_quote "$BUILD_RELEASE_DIR")"
-git archive --format=tar HEAD | build_ssh "tar -xf - -C $(shell_quote "$BUILD_RELEASE_DIR")"
+git archive --format=tar HEAD | gzip -1 | build_ssh "gzip -d | tar -xf - -C $(shell_quote "$BUILD_RELEASE_DIR")"
 
 echo "[3/8] 在构建机生成镜像 ${IMAGE}"
 build_ssh "set -e; cd $(shell_quote "$BUILD_RELEASE_DIR"); docker build --build-arg NEXT_PUBLIC_BASE_PATH=$(shell_quote "$BASE_PATH") -t $(shell_quote "$IMAGE") ."
