@@ -235,7 +235,8 @@ curl_bin="$(command -v curl || printf '/usr/bin/curl')"
 "$curl_bin" -fsS --max-time 20 https://fanrenapi.com/api/status >/dev/null
 "$curl_bin" -fsS --max-time 20 https://cdn.fanrenapi.com/api/status >/dev/null
 "$curl_bin" -fsS --max-time 20 "${PUBLIC_URL}api/health" >/dev/null
-"$curl_bin" -fsS --max-time 20 "${PUBLIC_URL}login" | grep -q "无限画布"
+"$curl_bin" -fsS --max-time 20 "${PUBLIC_URL}login" -o /tmp/fanren-canvas-login.html
+grep -q "凡人账号登录" /tmp/fanren-canvas-login.html
 
 echo "部署完成: ${PUBLIC_URL}"
 echo "镜像: ${IMAGE}"
