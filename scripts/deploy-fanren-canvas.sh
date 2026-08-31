@@ -26,6 +26,7 @@ PUBLIC_URL="${CANVAS_PUBLIC_URL:-https://fanrenapi.com/creative/}"
 BASE_PATH="${CANVAS_BASE_PATH:-/creative}"
 timestamp="$(date +%Y%m%d%H%M%S)"
 IMAGE="${CANVAS_IMAGE:-fanren-infinite-canvas:${timestamp}}"
+BUILD_RELEASE_DIR="${BUILD_DIR}/${timestamp}"
 
 shell_quote() {
   printf "%q" "$1"
@@ -52,7 +53,6 @@ validate_number() {
 }
 
 require_command git
-require_command rsync
 require_command ssh
 require_command date
 validate_number CANVAS_TARGET_PORT "$TARGET_PORT"
@@ -72,24 +72,12 @@ build_ssh "docker version >/dev/null"
 target_ssh "docker version >/dev/null"
 gateway_ssh "nginx -t >/dev/null"
 
-echo "[2/8] 同步源码到构建机 ${BUILD_HOST}:${BUILD_DIR}"
-build_ssh "mkdir -p $(shell_quote "$BUILD_DIR")"
-rsync -a --delete \
-  --exclude='.git/' \
-  --exclude='.next/' \
-  --exclude='node_modules/' \
-  --exclude='web/node_modules/' \
-  --exclude='data/' \
-  --exclude='logs/' \
-  --exclude='.env' \
-  --exclude='.env.*' \
-  --exclude='.claude/' \
-  --exclude='.gitnexus/' \
-  -e 'ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=12' \
-  ./ "${BUILD_HOST}:${BUILD_DIR}/"
+echo "[2/8] 传输已提交源码到构建机 ${BUILD_HOST}:${BUILD_RELEASE_DIR}"
+build_ssh "mkdir -p $(shell_quote "$BUILD_RELEASE_DIR")"
+git archive --format=tar HEAD | build_ssh "tar -xf - -C $(shell_quote "$BUILD_RELEASE_DIR")"
 
 echo "[3/8] 在构建机生成镜像 ${IMAGE}"
-build_ssh "set -e; cd $(shell_quote "$BUILD_DIR"); docker build --build-arg NEXT_PUBLIC_BASE_PATH=$(shell_quote "$BASE_PATH") -t $(shell_quote "$IMAGE") ."
+build_ssh "set -e; cd $(shell_quote "$BUILD_RELEASE_DIR"); docker build --build-arg NEXT_PUBLIC_BASE_PATH=$(shell_quote "$BASE_PATH") -t $(shell_quote "$IMAGE") ."
 
 echo "[4/8] 构建机直传镜像到 ${TARGET_HOST}"
 build_ssh "set -o pipefail; docker save $(shell_quote "$IMAGE") | gzip -1 | ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=12 -i $(shell_quote "$IMAGE_TRANSFER_IDENTITY") -p $(shell_quote "$IMAGE_TRANSFER_PORT") $(shell_quote "$IMAGE_TRANSFER_TARGET") fanren-image-transfer-load"
