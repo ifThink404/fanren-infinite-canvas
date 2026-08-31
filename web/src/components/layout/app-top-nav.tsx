@@ -8,14 +8,16 @@ import { navigationTools, type NavigationToolSlug } from "@/constant/navigation-
 import { AppConfigModal } from "@/components/layout/app-config-modal";
 import { MobileNavDrawer } from "@/components/layout/mobile-nav-drawer";
 import { UserStatusActions } from "@/components/layout/user-status-actions";
+import { logicalAppPath, appPath } from "@/lib/app-path";
 import { cn } from "@/lib/utils";
 import { useState } from "react";
 
 export function AppTopNav() {
     const pathname = usePathname();
+    const logicalPath = logicalAppPath(pathname);
     const [mobileNavOpen, setMobileNavOpen] = useState(false);
-    const hideHeader = /^\/canvas\/[^/]+/.test(pathname);
-    const slug = pathname.split("/").filter(Boolean)[0];
+    const hideHeader = /^\/canvas\/[^/]+/.test(logicalPath);
+    const slug = logicalPath.split("/").filter(Boolean)[0];
     const activeToolSlug = navigationTools.some((tool) => tool.slug === slug) ? (slug as NavigationToolSlug) : undefined;
 
     return (
@@ -28,8 +30,8 @@ export function AppTopNav() {
                                 <span
                                     className="size-5 shrink-0 bg-current"
                                     style={{
-                                        mask: "url(/logo.svg) center / contain no-repeat",
-                                        WebkitMask: "url(/logo.svg) center / contain no-repeat",
+                                        mask: `url(${appPath("/logo.svg")}) center / contain no-repeat`,
+                                        WebkitMask: `url(${appPath("/logo.svg")}) center / contain no-repeat`,
                                     }}
                                 />
                                 <span className="text-base font-medium">无限画布</span>

@@ -8,6 +8,7 @@ import { useRouter } from "next/navigation";
 
 import { fetchPrompts, type Prompt } from "@/services/api/prompts";
 import { cn } from "@/lib/utils";
+import { appPath } from "@/lib/app-path";
 import { uploadAssetMediaFile } from "@/services/file-storage";
 import { uploadImage } from "@/services/image-storage";
 import { useEffectiveConfig } from "@/stores/use-config-store";
@@ -157,7 +158,7 @@ export default function IndexPage() {
                             </div>
                             <p className="mt-3 text-base leading-7 text-stone-500 dark:text-stone-400">收藏稳定出图的提示词、参考风格和结果图片，让下一次创作从已有经验开始。</p>
                         </div>
-                        <Button type="link" href="/prompts" className="justify-self-center md:justify-self-end" icon={<ArrowRight className="size-4" />} iconPlacement="end">
+                        <Button type="link" href={appPath("/prompts")} className="justify-self-center md:justify-self-end" icon={<ArrowRight className="size-4" />} iconPlacement="end">
                             提示词库
                         </Button>
                     </div>

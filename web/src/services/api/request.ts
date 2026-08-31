@@ -1,5 +1,7 @@
 import axios from "axios";
 
+import { appPath } from "@/lib/app-path";
+
 export type ApiParams = Record<string, string | string[] | number | number[] | undefined>;
 
 type ApiResponse<T> = {
@@ -55,7 +57,7 @@ async function apiRequest<T>(config: { url: string; method: "GET" | "POST" | "DE
     let response;
     try {
         response = await axios.request<ApiResponse<T>>({
-            url: config.url,
+            url: appPath(config.url),
             method: config.method,
             params: config.params,
             paramsSerializer: { serialize: (params) => serializeApiParams(params as ApiParams).toString() },

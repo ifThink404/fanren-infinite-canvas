@@ -9,11 +9,12 @@ import { fetchUserConfig } from "@/services/api/user-config";
 import { defaultUserStorageProvider, defaultUserWebDAVStorageProvider, saveUserStorageProvider, saveUserWebDAVStorageProvider } from "@/services/image-storage";
 import { useConfigStore, type AiConfig } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
+import { logicalAppPath } from "@/lib/app-path";
 
 export function ClientRootInit({ children }: { children: ReactNode }) {
     const { message } = App.useApp();
     const handledConfigParams = useRef(false);
-    const pathname = usePathname();
+    const pathname = logicalAppPath(usePathname());
     const token = useUserStore((state) => state.token);
     const user = useUserStore((state) => state.user);
     const hydrateUser = useUserStore((state) => state.hydrateUser);

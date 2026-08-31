@@ -1,6 +1,7 @@
 import axios from "axios";
 import { nanoid } from "nanoid";
 
+import { appPath } from "@/lib/app-path";
 import { audioMimeType, isGlmTtsModel, normalizeAudioFormatValue, normalizeAudioSpeedValue, normalizeAudioVoiceValue, normalizeGlmTtsFormat, normalizeGlmTtsSpeed, normalizeGlmTtsVoice } from "@/lib/audio-generation";
 import { isGrok2APITtsConfig, normalizeGrokTtsFormat, normalizeGrokTtsLanguage, normalizeGrokTtsSpeed, type GrokTtsVoice } from "@/lib/grok-tts";
 import { isMimoPresetTtsModel, isMimoTtsModel, isMimoVoiceCloneModel, isMimoVoiceDesignModel, normalizeMimoTtsFormat, normalizeMimoTtsVoice } from "@/lib/mimo-tts";
@@ -40,7 +41,7 @@ function usesAccountProxy(config: AiConfig) {
 }
 
 function aiApiUrl(config: AiConfig, path: string) {
-    if (usesAccountProxy(config)) return `/api/v1${path}`;
+    if (usesAccountProxy(config)) return appPath(`/api/v1${path}`);
     const channel = localChannelForActiveModel(config);
     return buildApiUrl(channel?.baseUrl || config.baseUrl, path);
 }
@@ -96,7 +97,7 @@ export async function requestAudioGeneration(config: AiConfig, prompt: string, r
             const body = usesAccountProxy(config) ? { model, ...nativeBody } : nativeBody;
             const channel = localChannelForActiveModel(config);
             const response = await axios.post<GeminiAudioResponse>(
-                usesAccountProxy(config) ? "/api/v1/audio/speech" : geminiActionUrl(channel?.baseUrl || config.baseUrl, model, "generateContent"),
+                usesAccountProxy(config) ? appPath("/api/v1/audio/speech") : geminiActionUrl(channel?.baseUrl || config.baseUrl, model, "generateContent"),
                 body,
                 { headers: usesAccountProxy(config) ? aiHeaders(config) : geminiDirectHeaders(config) },
             );
@@ -152,7 +153,7 @@ export async function createCanvasAudioTask(config: AiConfig, prompt: string, op
         };
     }
 
-    const response = await fetch("/api/v1/canvas/audio-tasks", {
+    const response = await fetch(appPath("/api/v1/canvas/audio-tasks"), {
         method: "POST",
         headers: aiHeaders(config),
         body: JSON.stringify({
@@ -174,7 +175,7 @@ export async function createCanvasAudioTask(config: AiConfig, prompt: string, op
 export async function pollCanvasAudioTaskStatus(taskId: string): Promise<CanvasAudioTask> {
     const token = useUserStore.getState().token;
     if (!token) throw new Error("请先登录后再使用云端渠道");
-    const response = await fetch(`/api/v1/canvas/audio-tasks/${encodeURIComponent(taskId)}`, {
+    const response = await fetch(appPath(`/api/v1/canvas/audio-tasks/${encodeURIComponent(taskId)}`), {
         headers: { Authorization: `Bearer ${token}` },
     });
     if (!response.ok) throw new Error(await readFetchError(response, "读取音频任务失败"));

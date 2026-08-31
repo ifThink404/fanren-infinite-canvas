@@ -1,3 +1,5 @@
+import { appPath } from "@/lib/app-path";
+
 type StorageObjectPayload = {
     url: string;
     storageKey: string;
@@ -15,7 +17,7 @@ let anonymousSessionPromise: Promise<void> | null = null;
 
 function ensureAnonymousStorageSession() {
     if (!anonymousSessionPromise) {
-        anonymousSessionPromise = fetch("/api/anonymous/files/session", { method: "POST", credentials: "same-origin" }).then((response) => {
+        anonymousSessionPromise = fetch(appPath("/api/anonymous/files/session"), { method: "POST", credentials: "same-origin" }).then((response) => {
             if (!response.ok) throw new Error("匿名存储会话创建失败");
         }).catch((error) => {
             anonymousSessionPromise = null;
@@ -30,14 +32,14 @@ export async function uploadAnonymousStorageFile<T extends StorageObjectPayload>
     const formData = new FormData();
     formData.append("file", blob, filename);
     formData.append("provider", JSON.stringify(provider));
-    const response = await fetch("/api/anonymous/files", { method: "POST", body: formData, credentials: "same-origin" });
+    const response = await fetch(appPath("/api/anonymous/files"), { method: "POST", body: formData, credentials: "same-origin" });
     const payload = (await response.json().catch(() => null)) as ApiPayload<T> | null;
     if (!response.ok || payload?.code !== 0 || !payload.data) throw new Error(payload?.msg || "匿名存储上传失败");
     return payload.data;
 }
 
 export async function deleteAnonymousStorageFile(id: string, provider: object) {
-    const response = await fetch(`/api/anonymous/files/${encodeURIComponent(id)}`, {
+    const response = await fetch(appPath(`/api/anonymous/files/${encodeURIComponent(id)}`), {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ provider }),

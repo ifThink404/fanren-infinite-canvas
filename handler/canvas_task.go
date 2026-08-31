@@ -251,6 +251,10 @@ func GetCanvasAudioTask(w http.ResponseWriter, r *http.Request, id string) {
 }
 
 func runCanvasImageTask(task model.CanvasImageTask, user model.AuthUser, body []byte, contentType string, channelID string, userChannelID string) {
+	if task.Endpoint == "/images/jobs" {
+		runFanrenImageTask(task, user, body, contentType, channelID, userChannelID)
+		return
+	}
 	current := taskTime()
 	task.Status = "processing"
 	task.Progress = 10

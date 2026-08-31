@@ -1,5 +1,6 @@
 import axios from "axios";
 
+import { appPath } from "@/lib/app-path";
 import { dataUrlToFile, readFileAsDataUrl } from "@/lib/image-utils";
 import { isMiniMaxH3Config, normalizeMiniMaxH3Duration, normalizeMiniMaxH3Ratio, normalizeMiniMaxH3Resolution } from "@/lib/minimax-video";
 import { dataUrlToGeminiInlineData, geminiActionUrl, geminiDirectHeaders, geminiErrorMessage, geminiOperationUrl, isGeminiConfig, isGeminiVideoModel } from "@/lib/gemini";
@@ -39,7 +40,7 @@ function usesAccountProxy(config: AiConfig) {
 }
 
 function aiApiUrl(config: AiConfig, path: string) {
-    if (usesAccountProxy(config)) return `/api/v1${path}`;
+    if (usesAccountProxy(config)) return appPath(`/api/v1${path}`);
     const channel = localChannelForActiveModel(config);
     return buildApiUrl(channel?.baseUrl || config.baseUrl, path);
 }
@@ -59,7 +60,7 @@ function aiVideoPollUrl(config: AiConfig, model: string, id: string) {
         return aiApiUrl(config, `/videos/${encodeURIComponent(id)}`);
     }
     if (usesAccountProxy(config)) {
-        return `/api/v1/videos/${encodeURIComponent(id)}`;
+        return appPath(`/api/v1/videos/${encodeURIComponent(id)}`);
     }
     const channel = localChannelForActiveModel(config);
     const baseUrl = agnesBaseUrl(channel?.baseUrl || config.baseUrl);
@@ -188,7 +189,7 @@ export async function pollVideoGenerationTaskStatus(config: AiConfig, task: Vide
 
 export async function listVideoGenerationTasks(config: AiConfig) {
     if (!usesAccountProxy(config)) return [];
-    const payload = (await axios.get<ApiVideoEnvelope>("/api/v1/video-tasks", { headers: aiHeaders(config) })).data;
+    const payload = (await axios.get<ApiVideoEnvelope>(appPath("/api/v1/video-tasks"), { headers: aiHeaders(config) })).data;
     if (payload.code !== 0) throw new VideoRequestError(payload.msg || payload.message || "读取视频任务失败", payload);
     return Array.isArray(payload.data) ? payload.data.map(normalizeVideoResponse) : [];
 }
@@ -197,7 +198,7 @@ export async function deleteVideoGenerationTask(config: AiConfig, task?: VideoRe
     if (!usesAccountProxy(config) || !task) return;
     const id = task.id || task.task_id || task.video_id;
     if (!id) return;
-    const payload = (await axios.delete<ApiVideoEnvelope>(`/api/v1/video-tasks/${encodeURIComponent(id)}`, { headers: aiHeaders(config) })).data;
+    const payload = (await axios.delete<ApiVideoEnvelope>(appPath(`/api/v1/video-tasks/${encodeURIComponent(id)}`), { headers: aiHeaders(config) })).data;
     if (payload.code !== 0) throw new VideoRequestError(payload.msg || payload.message || "删除视频任务失败", payload);
 }
 
@@ -793,7 +794,7 @@ async function writeVideoAICallLog(config: AiConfig, model: string, endpoint: st
     const token = useUserStore.getState().token;
     if (!token) return;
     const channel = localChannelForActiveModel(config);
-    await fetch("/api/v1/ai-logs", {
+    await fetch(appPath("/api/v1/ai-logs"), {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({

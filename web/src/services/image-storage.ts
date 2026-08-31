@@ -3,6 +3,7 @@
 import localforage from "localforage";
 
 import { nanoid } from "nanoid";
+import { appPath } from "@/lib/app-path";
 import { readImageMeta } from "@/lib/image-utils";
 import { deleteAnonymousStorageFile, uploadAnonymousStorageFile } from "@/services/anonymous-storage";
 import { apiGet } from "@/services/api/request";
@@ -116,7 +117,7 @@ export function getProxyUrl(url: string): string {
     } catch {
         return url;
     }
-    return `/api/proxy-image?url=${encodeURIComponent(url)}`;
+    return appPath(`/api/proxy-image?url=${encodeURIComponent(url)}`);
 }
 
 export async function uploadImage(input: string | Blob, options: UploadImageOptions = {}): Promise<UploadedImage> {
@@ -172,7 +173,7 @@ export async function uploadRemoteImageToServer(url: string, filename: string): 
     const formData = new FormData();
     formData.append("file", blob, filename || "image-" + nanoid() + "." + imageExtension(blob.type));
     if (userProvider) formData.append("provider", JSON.stringify(toProviderPayload(userProvider)));
-    const uploadResponse = await fetch("/api/v1/files", { method: "POST", headers: { Authorization: "Bearer " + token }, body: formData });
+    const uploadResponse = await fetch(appPath("/api/v1/files"), { method: "POST", headers: { Authorization: "Bearer " + token }, body: formData });
     const payload = (await uploadResponse.json().catch(() => null)) as { code?: number; msg?: string; data?: UploadedImage } | null;
     if (!uploadResponse.ok || payload?.code !== 0 || !payload.data) throw new Error(payload?.msg || "服务端图片上传失败");
     const meta = await readImageMeta(payload.data.url);
@@ -215,7 +216,7 @@ export async function resolveImageUrl(storageKey?: string, fallback = "") {
                 if (!useUserStore.getState().token || !direct.isWebDAVDirectUnavailable(error)) throw error;
             }
         }
-        const url = info.publicUrl || `/api/files/${encodeURIComponent(id)}/content`;
+        const url = info.publicUrl || appPath(`/api/files/${encodeURIComponent(id)}/content`);
         serverUrls.set(id, url);
         return url;
     }
@@ -258,7 +259,7 @@ async function maybeUploadImageToServer(blob: Blob): Promise<UploadedImage | nul
     const formData = new FormData();
     formData.append("file", blob, `image-${nanoid()}.${imageExtension(blob.type)}`);
     if (userProvider) formData.append("provider", JSON.stringify(toProviderPayload(userProvider)));
-    const response = await fetch("/api/v1/files", { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: formData });
+    const response = await fetch(appPath("/api/v1/files"), { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: formData });
     const payload = (await response.json().catch(() => null)) as { code?: number; msg?: string; data?: UploadedImage } | null;
     if (!response.ok || payload?.code !== 0 || !payload.data) {
         if (!canUseGlobalProvider) return null;
@@ -321,7 +322,7 @@ export async function imageToDataUrl(image: { url?: string; dataUrl?: string; st
         image.url && !image.url.startsWith("blob:") ? image.url : "",
         localUrl,
         resolvedUrl,
-        serverObjectId && !directGuestObject ? `/api/files/${encodeURIComponent(serverObjectId)}/content` : "",
+        serverObjectId && !directGuestObject ? appPath(`/api/files/${encodeURIComponent(serverObjectId)}/content`) : "",
     ].filter((url, index, list): url is string => Boolean(url) && list.indexOf(url) === index);
     if (!urls.length) return "";
     let lastError = "";
@@ -508,7 +509,7 @@ async function deleteServerImage(storageKey: string) {
         await store.removeItem(storageKey);
         return;
     }
-    const response = await fetch(`/api/v1/files/${encodeURIComponent(id)}`, {
+    const response = await fetch(appPath(`/api/v1/files/${encodeURIComponent(id)}`), {
         method: "DELETE",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify(provider ? { provider: toProviderPayload(provider) } : {}),

@@ -4,13 +4,14 @@ import { useEffect, useRef, type ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
 
 import { AppTopNav } from "@/components/layout/app-top-nav";
+import { logicalAppPath } from "@/lib/app-path";
 import { fetchUserConfig } from "@/services/api/user-config";
 import { useUserStore } from "@/stores/use-user-store";
 
 const protectedPrefixes = ["/asset-library"];
 
 export default function UserLayout({ children }: { children: ReactNode }) {
-    const pathname = usePathname();
+    const pathname = logicalAppPath(usePathname());
     const router = useRouter();
     const user = useUserStore((state) => state.user);
     const isReady = useUserStore((state) => state.isReady);

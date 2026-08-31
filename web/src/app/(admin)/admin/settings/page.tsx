@@ -11,6 +11,7 @@ import { ChannelModelSelectorModal } from "@/components/channel-model-selector-m
 import { modelChannelApiKeyUrls, modelChannelDefaultBaseUrls } from "@/lib/model-channel";
 import { fetchAdminSettings, fetchChannelModels, measureAdminStorageProvider, saveAdminSettings, testChannelModel, type AdminModelChannel, type AdminModelCost, type AdminSettings, type AdminStorageProvider } from "@/services/api/admin";
 import { useUserStore } from "@/stores/use-user-store";
+import { appPath } from "@/lib/app-path";
 
 const CodeMirror = dynamic(() => import("@uiw/react-codemirror"), { ssr: false });
 const jsonEditorTheme = EditorView.theme({
@@ -490,7 +491,7 @@ export default function AdminSettingsPage() {
                                     size="small"
                                     title={
                                         <Space>
-                                            <img src="/icons/linuxdo.svg" alt="" width={18} height={18} />
+                                            <img src={appPath("/icons/linuxdo.svg")} alt="" width={18} height={18} />
                                             Linux.do 登录
                                         </Space>
                                     }

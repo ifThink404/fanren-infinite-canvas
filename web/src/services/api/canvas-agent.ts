@@ -1,4 +1,5 @@
 import { mimoTextModels } from "@/lib/mimo-tts";
+import { APP_BASE_PATH } from "@/lib/app-path";
 import { dataUrlToGeminiInlineData, geminiActionUrl, geminiDirectHeaders, geminiErrorMessage, isGeminiConfig } from "@/lib/gemini";
 import { aiApiUrl, aiHeaders, refreshRemoteUser } from "@/services/api/image";
 import { imageToDataUrl } from "@/services/image-storage";
@@ -261,7 +262,7 @@ async function requestGeminiCompletion(config: AiConfig, systemPrompt: string, m
         contents,
         ...(tools.length ? { tools: [{ functionDeclarations: tools.map((tool) => tool.function) }] } : {}),
     };
-    const proxy = Boolean(aiApiUrl(config, "/chat/completions").startsWith("/api/"));
+    const proxy = Boolean(aiApiUrl(config, "/chat/completions").startsWith(`${APP_BASE_PATH}/api/`));
     const channel = localChannelForActiveModel(config);
     const { model: _model, stream: _stream, ...nativeBody } = body;
     const response = await fetch(proxy ? aiApiUrl(config, "/chat/completions") : geminiActionUrl(channel?.baseUrl || config.baseUrl, config.model, "generateContent"), {

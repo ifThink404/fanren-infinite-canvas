@@ -3,6 +3,7 @@
 import localforage from "localforage";
 import { nanoid } from "nanoid";
 
+import { appPath } from "@/lib/app-path";
 import { deleteAnonymousStorageFile, uploadAnonymousStorageFile } from "@/services/anonymous-storage";
 import { apiGet } from "@/services/api/request";
 import { canUseGlobalStorage, getProxyUrl, loadUserStorageProvider, toProviderPayload, type StorageConfig, type UserWebDAVStorageProvider } from "@/services/image-storage";
@@ -73,7 +74,7 @@ async function uploadMediaBlobToServer(blob: Blob, filename: string): Promise<Up
     const formData = new FormData();
     formData.append("file", blob, filename);
     if (userProvider) formData.append("provider", JSON.stringify(toProviderPayload(userProvider)));
-    const response = await fetch("/api/v1/files", { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: formData });
+    const response = await fetch(appPath("/api/v1/files"), { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: formData });
     const payload = (await response.json().catch(() => null)) as { code?: number; msg?: string; data?: UploadedFile } | null;
     if (!response.ok || payload?.code !== 0 || !payload.data) throw new Error(payload?.msg || "媒体同步失败");
     const meta = payload.data.mimeType?.startsWith("video/") ? await readVideoMeta(payload.data.url) : {};
@@ -138,7 +139,7 @@ export async function resolveMediaUrl(storageKey?: string, fallback = "") {
                 if (!useUserStore.getState().token || !direct.isWebDAVDirectUnavailable(error)) throw error;
             }
         }
-        const url = info.publicUrl || `/api/files/${encodeURIComponent(id)}/content`;
+        const url = info.publicUrl || appPath(`/api/files/${encodeURIComponent(id)}/content`);
         return url;
     }
     return fallback;
@@ -180,7 +181,7 @@ async function deleteServerMedia(storageKey: string) {
         await store.removeItem(storageKey);
         return;
     }
-    const response = await fetch(`/api/v1/files/${encodeURIComponent(id)}`, {
+    const response = await fetch(appPath(`/api/v1/files/${encodeURIComponent(id)}`), {
         method: "DELETE",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify(provider ? { provider: toProviderPayload(provider) } : {}),

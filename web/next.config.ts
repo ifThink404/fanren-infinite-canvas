@@ -12,14 +12,20 @@ const localChangelog = readFileSync(resolve(webDir, "../CHANGELOG.md"), "utf8");
 export default function nextConfig(phase: string): NextConfig {
     const isDev = phase === PHASE_DEVELOPMENT_SERVER;
     const releases = parseChangelog(localChangelog);
+    const configuredBasePath = process.env.NEXT_PUBLIC_BASE_PATH?.trim() || "";
+    const basePath = configuredBasePath && configuredBasePath !== "/"
+        ? `/${configuredBasePath.replace(/^\/+|\/+$/g, "")}`
+        : "";
 
     return {
         output: "standalone",
+        basePath,
         allowedDevOrigins: isDev ? ["*.*.*.*"] : [],
         typescript: {
             ignoreBuildErrors: true,
         },
         env: {
+            NEXT_PUBLIC_BASE_PATH: basePath,
             NEXT_PUBLIC_APP_VERSION: localVersion,
             NEXT_PUBLIC_APP_RELEASES: JSON.stringify(releases),
         },

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { appPath } from "@/lib/app-path";
 import type { CanvasDirectorCapture, CanvasDirectorPanorama, CanvasDirectorVideo } from "../types";
 
 type PanoramaRemoval = Pick<CanvasDirectorPanorama, "edgeId" | "sourceNodeId">;
@@ -125,7 +126,7 @@ export function CanvasDirector({
 
     return (
         <div className="fixed inset-0 z-[2000]">
-            <iframe ref={iframeRef} title="3D导演台" src="/director/index.html" className="block h-full w-full border-0" />
+            <iframe ref={iframeRef} title="3D导演台" src={appPath("/director/index.html")} className="block h-full w-full border-0" />
         </div>
     );
 }

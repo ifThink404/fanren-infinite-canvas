@@ -1,5 +1,7 @@
 import axios from "axios";
 
+import { appPath } from "@/lib/app-path";
+import { isFanrenBaseUrl, supportsFanrenImageJobs } from "@/lib/fanren";
 import { isMiniMaxChannel, miniMaxModels } from "@/lib/minimax-video";
 import { dataUrlToFile } from "@/lib/image-utils";
 import { isKIESeedreamLayerDecompositionModel } from "@/lib/kie-models";
@@ -520,7 +522,7 @@ function usesAccountProxy(config: AiConfig) {
 }
 
 export function aiApiUrl(config: AiConfig, path: string) {
-    if (usesAccountProxy(config)) return `/api/v1${path}`;
+    if (usesAccountProxy(config)) return appPath(`/api/v1${path}`);
     const channel = localChannelForActiveModel(config);
     return buildApiUrl(channel?.baseUrl || config.baseUrl, path);
 }
@@ -559,7 +561,7 @@ async function writeLocalAICallLog(config: AiConfig, endpoint: string, startedAt
     const token = useUserStore.getState().token;
     if (!token) return;
     const channel = localChannelForActiveModel(config);
-    await fetch("/api/v1/ai-logs", {
+    await fetch(appPath("/api/v1/ai-logs"), {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({
@@ -1006,7 +1008,7 @@ export async function createCanvasImageTask(config: AiConfig & { seedIndex?: num
     }
     const params = createImageRequestParams({ ...config, count: "1" });
     const request = await createCanvasImageTaskRequest({ ...config, count: "1" }, prompt, references, params, options);
-    const response = await fetch("/api/v1/canvas/image-tasks", request);
+    const response = await fetch(appPath("/api/v1/canvas/image-tasks"), request);
     if (!response.ok) {
         const error = await fetchErrorDetail(response, "图片任务创建失败");
         throw new ImageRequestError(error.message, error.detail);
@@ -1020,7 +1022,7 @@ export async function createCanvasImageTask(config: AiConfig & { seedIndex?: num
 export async function pollCanvasImageTaskStatus(taskId: string): Promise<CanvasImageTask> {
     const token = useUserStore.getState().token;
     if (!token) throw new Error("请先登录后再使用云端渠道");
-    const response = await fetch(`/api/v1/canvas/image-tasks/${encodeURIComponent(taskId)}`, {
+    const response = await fetch(appPath(`/api/v1/canvas/image-tasks/${encodeURIComponent(taskId)}`), {
         headers: { Authorization: `Bearer ${token}` },
     });
     if (!response.ok) {
@@ -1035,10 +1037,30 @@ export async function pollCanvasImageTaskStatus(taskId: string): Promise<CanvasI
 async function createCanvasImageTaskRequest(config: AiConfig & { seedIndex?: number; seedCount?: number }, prompt: string, references: ReferenceImage[], params: ImageRequestParams, options: CanvasImageTaskOptions): Promise<RequestInit> {
     assertImageReferencesSupported(config.model, references);
     const taskChannelId = channelIdForActiveModel(config);
-    const taskChannelHeader: Record<string, string> = config.channelMode === "remote" && taskChannelId ? { "X-Model-Channel-ID": taskChannelId } : {};
+    const activeChannel = config.channelMode === "remote"
+        ? config.publicChannels.find((channel) => channel.id === taskChannelId) || config.publicChannels.find((channel) => (channel.models || []).includes(config.model)) || config.publicChannels[0]
+        : localChannelForActiveModel(config);
+    const resolvedTaskChannelId = taskChannelId || activeChannel?.id || "";
+    const taskChannelHeader: Record<string, string> = config.channelMode === "remote" && resolvedTaskChannelId ? { "X-Model-Channel-ID": resolvedTaskChannelId } : {};
     const tokenHeaders = { ...aiHeaders(config), ...taskChannelHeader };
     const jsonHeaders = { ...aiHeaders(config, "application/json"), ...taskChannelHeader };
-    const meta = { nodeId: options.nodeId || "", source: options.source || "canvas", sourceId: options.sourceId || "", clientTaskId: options.clientTaskId || "", prompt, channelId: taskChannelId };
+    const meta = { nodeId: options.nodeId || "", source: options.source || "canvas", sourceId: options.sourceId || "", clientTaskId: options.clientTaskId || "", prompt, channelId: resolvedTaskChannelId };
+    const fanrenImageJobs = isFanrenBaseUrl(activeChannel?.baseUrl || config.baseUrl) && supportsFanrenImageJobs(config.model);
+    if (fanrenImageJobs) {
+        const inputImageDataUrls = references.length ? await Promise.all(references.map((image) => imageToDataUrl(image))) : [];
+        const body: Record<string, unknown> = {
+            model: config.model,
+            prompt: withPromptGuard(config, withSystemPrompt(config, prompt)),
+            ...(inputImageDataUrls.length ? { input_images: inputImageDataUrls } : {}),
+        };
+        applyImageGenerationParams(body, config, params);
+        if (params.n > 1) body.n = params.n;
+        return {
+            method: "POST",
+            headers: jsonHeaders,
+            body: JSON.stringify({ endpoint: "/images/jobs", ...meta, request: body }),
+        };
+    }
     if (isGeminiConfig(config)) {
         const body = await createGeminiImageBody(config, prompt, references, params);
         return {
@@ -1229,7 +1251,7 @@ async function requestGeminiImageSingle(config: AiConfig, prompt: string, refere
         body,
         params.timeoutSeconds,
         () => requestWithTransientRetry(() => withTimeout(params.timeoutSeconds, (signal) => fetch(
-            proxy ? `/api/v1${references.length ? "/images/edits" : "/images/generations"}` : geminiActionUrl(channel?.baseUrl || config.baseUrl, config.model, "generateContent"),
+            proxy ? appPath(`/api/v1${references.length ? "/images/edits" : "/images/generations"}`) : geminiActionUrl(channel?.baseUrl || config.baseUrl, config.model, "generateContent"),
             { method: "POST", headers: proxy ? aiHeaders(config, "application/json") : geminiDirectHeaders(config), body: JSON.stringify(nativeBody), signal },
         ))),
         async (response) => {
@@ -1302,7 +1324,7 @@ async function requestGeminiText(config: AiConfig, messages: ChatCompletionMessa
     const body = await createGeminiTextBody(config, withSystemMessage(config, messages));
     const proxy = usesAccountProxy(config);
     const channel = localChannelForActiveModel(config);
-    const response = await fetch(proxy ? "/api/v1/chat/completions" : geminiActionUrl(channel?.baseUrl || config.baseUrl, config.model, "streamGenerateContent"), {
+    const response = await fetch(proxy ? appPath("/api/v1/chat/completions") : geminiActionUrl(channel?.baseUrl || config.baseUrl, config.model, "streamGenerateContent"), {
         method: "POST",
         headers: proxy ? aiHeaders(config, "application/json") : geminiDirectHeaders(config),
         body: JSON.stringify(proxy ? body : withoutModel(body)),
@@ -1476,7 +1498,7 @@ async function requestAgnesImageEdit(config: AiConfig & { seedIndex?: number; se
 export async function listCanvasImageTasks(config: AiConfig, sources: Array<"image-workbench" | "workflow" | "canvas"> = []) {
     if (!usesAccountProxy(config)) return [];
     const query = sources.length ? `?${sources.map((source) => `source=${encodeURIComponent(source)}`).join("&")}` : "";
-    const response = await fetch(`/api/v1/canvas/image-tasks${query}`, {
+    const response = await fetch(appPath(`/api/v1/canvas/image-tasks${query}`), {
         headers: aiHeaders(config),
     });
     if (!response.ok) {
@@ -1491,7 +1513,7 @@ export async function listCanvasImageTasks(config: AiConfig, sources: Array<"ima
 export async function batchCanvasImageTaskStatus(config: AiConfig, ids: string[]) {
     const taskIds = Array.from(new Set(ids.map((id) => id.trim()).filter(Boolean)));
     if (!usesAccountProxy(config) || !taskIds.length) return [];
-    const response = await fetch("/api/v1/canvas/image-tasks/status", {
+    const response = await fetch(appPath("/api/v1/canvas/image-tasks/status"), {
         method: "POST",
         headers: aiHeaders(config, "application/json"),
         body: JSON.stringify({ ids: taskIds }),
@@ -1507,7 +1529,7 @@ export async function batchCanvasImageTaskStatus(config: AiConfig, ids: string[]
 
 export async function deleteCanvasImageTask(config: AiConfig, task?: CanvasImageTask | null) {
     if (!usesAccountProxy(config) || !task?.id) return;
-    const response = await fetch(`/api/v1/canvas/image-tasks/${encodeURIComponent(task.id)}`, {
+    const response = await fetch(appPath(`/api/v1/canvas/image-tasks/${encodeURIComponent(task.id)}`), {
         method: "DELETE",
         headers: aiHeaders(config),
     });
