@@ -201,7 +201,20 @@ if location < 0:
 
 block = f'''    {marker}
     location = /creative {{
-        return 301 /creative/;
+        proxy_pass http://127.0.0.1:{port};
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $fanrenapi_forwarded_proto;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Prefix /creative;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
     }}
     location ^~ /creative/ {{
         proxy_pass http://127.0.0.1:{port};
@@ -236,7 +249,7 @@ curl_bin="$(command -v curl || printf '/usr/bin/curl')"
 "$curl_bin" -fsS --max-time 20 https://cdn.fanrenapi.com/api/status >/dev/null
 "$curl_bin" -fsS --max-time 20 "${PUBLIC_URL}api/health" >/dev/null
 "$curl_bin" -fsS --max-time 20 "${PUBLIC_URL}login" -o /tmp/fanren-canvas-login.html
-grep -q "凡人账号登录" /tmp/fanren-canvas-login.html
+grep -q "无限画布" /tmp/fanren-canvas-login.html
 
 echo "部署完成: ${PUBLIC_URL}"
 echo "镜像: ${IMAGE}"
