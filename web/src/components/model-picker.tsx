@@ -4,6 +4,7 @@ import { useEffect, useId, useMemo, useState } from "react";
 import { Cpu } from "lucide-react";
 
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
+import { appPath } from "@/lib/app-path";
 import { cn } from "@/lib/utils";
 import { filterModelsByCapability, normalizeLocalChannels, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
 
@@ -120,7 +121,7 @@ function ModelLabel({ model, channelName }: { model: string; channelName?: strin
 
 function ModelIcon({ model }: { model: string }) {
     const icon = resolveModelIcon(model);
-    return icon ? <img src={icon} alt="" className="size-4 shrink-0 dark:invert" /> : <Cpu className="size-4 shrink-0 opacity-70" />;
+    return icon ? <img src={appPath(icon)} alt="" className="size-4 shrink-0 dark:invert" /> : <Cpu className="size-4 shrink-0 opacity-70" />;
 }
 
 function resolveModelIcon(model: string) {
