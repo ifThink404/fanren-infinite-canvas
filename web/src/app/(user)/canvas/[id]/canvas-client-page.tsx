@@ -5125,7 +5125,8 @@ function canvasVideoTaskFromMetadata(metadata?: CanvasNodeMetadata): VideoRespon
 }
 
 function canvasVideoTaskId(metadata?: CanvasNodeMetadata) {
-    return metadata?.videoTaskVideoId || metadata?.videoTaskId || "";
+    const id = metadata?.videoTaskVideoId || metadata?.videoTaskId || "";
+    return isClientVideoTaskId(id) ? "" : id;
 }
 
 function isClientVideoTaskId(id?: string | null): id is string {
