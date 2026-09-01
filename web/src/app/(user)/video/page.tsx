@@ -175,7 +175,7 @@ export default function VideoPage() {
             if (pollingLogIdsRef.current.has(log.id)) return;
             const resumeConfig = buildResumeVideoConfig(effectiveConfigRef.current, log);
             const taskId = videoLogTaskId(log);
-            if (!taskId || !isAiConfigReady(resumeConfig, log.model)) return;
+            if (!taskId || isClientVideoTaskId(taskId) || !isAiConfigReady(resumeConfig, log.model)) return;
             if (isLocalClientVideoLog(log) && !usesBackendVideoTasks(resumeConfig)) return;
             void pollPendingLogOnce(log, resumeConfig);
         });

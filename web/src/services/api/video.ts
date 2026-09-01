@@ -198,6 +198,12 @@ export async function pollVideoGenerationTaskStatus(config: AiConfig, task: Vide
     return cacheProtectedFanrenVideo(config, model, await cacheProtectedGeminiVideo(config, model, await cacheProtectedGrokVideo(config, model, result)));
 }
 
+export function isTransientVideoPollError(error: unknown) {
+    if (!axios.isAxiosError(error)) return false;
+    const status = error.response?.status;
+    return !error.response || status === 500 || status === 502 || status === 503 || status === 504;
+}
+
 export async function listVideoGenerationTasks(config: AiConfig) {
     if (!usesAccountProxy(config)) return [];
     const payload = (await axios.get<ApiVideoEnvelope>(appPath("/api/v1/video-tasks"), { headers: aiHeaders(config) })).data;
